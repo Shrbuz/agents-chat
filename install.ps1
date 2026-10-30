@@ -166,10 +166,13 @@ try {
         $installedVersion = $release.Tag.TrimStart("v")
         $zipPath = Join-Path $tempRoot $release.ZipName
         Step "Downloading $($release.ZipName)"
-        Invoke-WebRequest -Uri $release.ZipUrl -OutFile $zipPath -UseBasicParsing
+        $cacheBust = "?cb=" + [guid]::NewGuid().ToString("N")
+        Invoke-WebRequest -Uri ($release.ZipUrl + $cacheBust) -OutFile $zipPath -UseBasicParsing `
+            -Headers @{ "Cache-Control" = "no-cache"; "Pragma" = "no-cache" }
         if ($release.ChecksumUrl) {
             $checksumPath = $zipPath + ".sha256"
-            Invoke-WebRequest -Uri $release.ChecksumUrl -OutFile $checksumPath -UseBasicParsing
+            Invoke-WebRequest -Uri ($release.ChecksumUrl + $cacheBust) -OutFile $checksumPath -UseBasicParsing `
+                -Headers @{ "Cache-Control" = "no-cache"; "Pragma" = "no-cache" }
             $expected = ((Get-Content $checksumPath -Raw).Trim() -split "\s+")[0].ToLowerInvariant()
             $actual = (Get-FileHash $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
             if ($expected -ne $actual) { Fail "SHA-256 mismatch; refusing to install" }
