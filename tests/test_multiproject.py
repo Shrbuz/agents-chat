@@ -189,7 +189,7 @@ class SetupTests(unittest.TestCase):
             self.assertEqual(chat["roles"], {"backend": "backend", "frontend": "frontend"})
             prompt = (project / ".agents-chat/prompts/backend.md").read_text(encoding="utf-8")
             self.assertIn("agent-chat", prompt)
-            self.assertIn(str(project / "agent_chat"), prompt)
+            self.assertIn(str((project / "agent_chat").resolve()), prompt)
 
 
 class AgentChatBridgeTests(unittest.TestCase):

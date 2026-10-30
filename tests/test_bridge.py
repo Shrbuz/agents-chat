@@ -204,8 +204,10 @@ class IntegrationTests(unittest.TestCase):
             {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
             {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "bridge_send", "arguments": {
                 "target": "success", "prompt": "sum", "key": str(uuid.uuid4())}}}]
-        proc = subprocess.run([sys.executable, str(ROOT / "bridge.py"), "--state", str(self.state), "mcp", "--agent", "review"],
-                              input="\n".join(json.dumps(r) for r in requests) + "\n", capture_output=True, text=True, timeout=10)
+        proc = subprocess.run([sys.executable, str(ROOT / "bridge.py"), "--state", str(self.state),
+                               "--config", str(self.config), "mcp", "--agent", "review"],
+                              input="\n".join(json.dumps(r) for r in requests) + "\n",
+                              capture_output=True, text=True, encoding="utf-8", timeout=10)
         responses = [json.loads(line) for line in proc.stdout.splitlines()]
         self.assertEqual(len(responses), 3)
         self.assertEqual(len(responses[1]["result"]["tools"]), 9)
