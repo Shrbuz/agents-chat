@@ -1,8 +1,11 @@
 # Agents Chat
 
+[![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 ## 一行安装（Windows 10/11）
 
-仓库发布 Release 后，在 PowerShell 中执行：
+在 PowerShell 中执行：
 
 ```powershell
 irm https://github.com/Shrbuz/agents-chat/releases/latest/download/install.ps1 | iex

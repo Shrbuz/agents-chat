@@ -16,7 +16,8 @@
 | `join` | 显式 session 绑定成功并返回 `desktop_session`；缺少连接器上下文时明确告警，不回退 CLI |
 | 便携包 | 官方 Python 3.14.8 embeddable；便携 CLI 完成 setup → start → 跨项目 send → wait → inbox → stop；便携托盘可启动后台 |
 | 托盘 | 实际启动托盘、自动拉起后台、唤出状态窗口；本机空闲约托盘 41 MB、后台 29 MB |
-| 一行安装器 | 本地 zip 安装、更新保留 `config.json`/`data`、卸载 `-RemoveData` 均通过；`install.ps1`/`uninstall.ps1` PowerShell AST 语法解析通过；GitHub 远程 Release 下载流程需发布后首次 tag 验证 |
+| 一行安装器 | 本地 zip 安装、更新保留 `config.json`/`data`、卸载 `-RemoveData` 均通过；`install.ps1`/`uninstall.ps1` PowerShell AST 语法解析通过 |
+| GitHub Release | `v0.5.0` 已公开；tag push 触发 Actions 成功；Release 含便携 zip、SHA-256、注入仓库地址的 `install.ps1`；从 `releases/latest/download/install.ps1` 实际下载并安装到临时目录通过，SHA-256 校验通过 |
 | 安装版更新 | 旧队列和桌面绑定存在时重复安装成功，旧任务计数、桌面绑定和 Qoder 输入禁用哨兵保留 |
 
 fixture 验证不调用真实模型。真实 Codex/Qoder 跨项目往返、Qoder 原生桌面往返和运行中插话/取消仍需在用户环境单独验收；`succeeded` 只表示 Runtime 正常结束，不等于业务验收。
