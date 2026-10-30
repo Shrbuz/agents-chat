@@ -1,0 +1,52 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, for example v0.5.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run tests
+        run: python -m unittest discover -s tests
+
+      - name: Build portable package
+        run: python build_portable.py
+
+      - name: Prepare release assets
+        shell: pwsh
+        run: |
+          $repo = "${{ github.repository }}"
+          $installer = (Get-Content install.ps1 -Raw).Replace("__REPO__", $repo)
+          Set-Content -Path dist/install.ps1 -Value $installer -Encoding utf8
+          $zip = Get-ChildItem dist/AgentsChat-Portable-*.zip | Select-Object -First 1
+          if (-not $zip) { throw "portable zip not found" }
+          $hash = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($zip.Name)" | Set-Content -Path "$($zip.FullName).sha256" -Encoding ascii
+          Get-ChildItem dist | Format-Table Name,Length
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: |
+            dist/AgentsChat-Portable-*.zip
+            dist/AgentsChat-Portable-*.zip.sha256
+            dist/install.ps1

@@ -1,0 +1,9 @@
+{
+  "id": "agents-chat.desktop",
+  "name": "Agents Chat Desktop",
+  "version": "0.2.0",
+  "engines": {"qoder": ">=0.4.11"},
+  "main": "server.cjs",
+  "activationEvents": ["onStartup"],
+  "permissions": ["chat.continueSession", "chat.interruptTurn", "chat.observeTurn", "chat.readTurnOutput", "chat.readSessionMetadata", "mcp.registerInProcess"]
+}

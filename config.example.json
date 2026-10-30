@@ -1,0 +1,48 @@
+{
+  "version": 2,
+  "projects": {
+    "alpha": {
+      "name": "Alpha 项目",
+      "root": "E:/work/alpha",
+      "description": "示例：一个项目内由两个角色协作",
+      "roles": {
+        "backend": {
+          "adapter": "codex",
+          "command": ["codex"],
+          "cwd": ".",
+          "sandbox": "workspace-write",
+          "lean": false,
+          "description": "API、数据与业务逻辑",
+          "peers": ["alpha.frontend"],
+          "args": ["--ephemeral"]
+        },
+        "frontend": {
+          "adapter": "qoder",
+          "command": ["qodercli.exe"],
+          "cwd": ".",
+          "description": "界面与交互",
+          "args": ["--permission-mode", "dont_ask", "--tools", "Read", "--allowed-tools", "Read",
+                   "--strict-mcp-config", "--no-session-persistence", "--max-output-tokens", "1000",
+                   "--max-model-request-retries", "0"],
+          "desktop_input_enabled": false
+        }
+      }
+    },
+    "beta": {
+      "name": "Beta 项目",
+      "root": "E:/work/beta",
+      "description": "示例：跨项目角色",
+      "roles": {
+        "tester": {
+          "adapter": "codex",
+          "command": ["codex"],
+          "cwd": ".",
+          "sandbox": "read-only",
+          "lean": true,
+          "description": "只做验收与证据核对",
+          "args": ["--ephemeral"]
+        }
+      }
+    }
+  }
+}

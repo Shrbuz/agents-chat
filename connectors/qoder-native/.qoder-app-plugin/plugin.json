@@ -1,0 +1,9 @@
+{
+  "id": "agents-chat.native",
+  "name": "Agents Chat Native",
+  "version": "0.3.0",
+  "engines": {"qoder": ">=0.4.11"},
+  "main": "dist/node/server.cjs",
+  "activationEvents": ["onStartup"],
+  "permissions": ["chat.continueSession", "chat.observeTurn", "chat.interruptTurn"]
+}
