@@ -241,7 +241,7 @@ class AgentChatBridgeTests(unittest.TestCase):
                 self.assertFalse(payload["notify"])
                 self.assertEqual(payload["kind"], "agent_chat_wakeup")
                 self.assertIn("实现登录 API", payload["prompt"])
-                self.assertIn("agent_chat.py", payload["prompt"])
+                self.assertIn("inbox", payload["prompt"])
                 # The wakeup itself must not create an inbox result for the synthetic sender.
                 self.assertEqual(broker.store.inbox("agent-chat", "test")["messages"], [])
                 self.assertEqual(len(broker.store.list_sessions()), 0)
