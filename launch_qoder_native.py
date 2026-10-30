@@ -54,8 +54,12 @@ def main():
     convention=Path.home()/".qoder/dev-extensions"
     if convention.exists() and any(item.is_dir() for item in convention.iterdir()):
         raise SystemExit("Other native development extensions are present. Review them before enabling development loading; nothing was launched.")
-    (plugin/"bridge.local.json").write_text(json.dumps({"state":str(state)},ensure_ascii=False),encoding="utf-8")
-    environment=dict(os.environ,QODER_APP_PLUGIN_ALLOW_UNVERIFIED="true",QODER_APP_PLUGIN_DEV_DIRS=str(plugin))
+    (plugin/"bridge.local.json").write_text(json.dumps({"state":str(state),"agent":"*"},ensure_ascii=False),encoding="utf-8")
+    environment=dict(os.environ)
+    # Launchers inside Codex/DSH may expose ELECTRON_RUN_AS_NODE=1.  Inheriting
+    # it makes Qoder start as plain Node and exit before any window appears.
+    environment.pop("ELECTRON_RUN_AS_NODE",None)
+    environment.update(QODER_APP_PLUGIN_ALLOW_UNVERIFIED="true",QODER_APP_PLUGIN_DEV_DIRS=str(plugin))
     process=subprocess.Popen([str(app)],env=environment,cwd=app.parent,creationflags=subprocess.CREATE_NO_WINDOW)
     print(json.dumps({"launched":True,"pid":process.pid,"extension":str(plugin),"scope":"this Qoder process only","ui_automation":False},ensure_ascii=False))
 

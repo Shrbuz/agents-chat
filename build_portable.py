@@ -15,7 +15,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
-VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip() if (ROOT / "VERSION").is_file() else "0.5.0"
+VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip() if (ROOT / "VERSION").is_file() else "0.5.1"
 PYTHON_VERSION = "3.14.8"
 PYTHON_URL = f"https://www.python.org/ftp/python/{PYTHON_VERSION}/python-{PYTHON_VERSION}-embed-amd64.zip"
 
@@ -83,7 +83,7 @@ def write_support_files(destination):
     (destination / "python-runtime.txt").write_text("runtime\\python\\python.exe\n", encoding="utf-8")
     native = destination / "connectors" / "qoder-native" / "bridge.local.json"
     if native.parent.is_dir():
-        native.write_text(json.dumps({"state": str(destination / "data"), "agent": "qoder"}, ensure_ascii=False),
+        native.write_text(json.dumps({"state": str(destination / "data"), "agent": "*"}, ensure_ascii=False),
                           encoding="utf-8")
     config = destination / "config.json"
     if not config.exists():

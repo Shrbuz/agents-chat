@@ -2,6 +2,17 @@
 
 本文件只记录可公开复现的检查。真实桌面聊天 ID、任务 ID、业务项目路径和本机截图不进入开源仓库。
 
+## 0.5.1 Qoder 原生多角色
+
+| 检查 | 结果 |
+|---|---|
+| 启动修复 | 从 Codex/DSH 终端启动 Qoder 时清除继承的 `ELECTRON_RUN_AS_NODE=1`；否则 Qoder 以 Node 模式启动后立即退出 |
+| 原生扩展 | 重启后 `qoder-native-status.json` 为 `ready=true`；扩展改为轮询所有 `qoder_native` 绑定，而不是只认一个 `qoder` 名称 |
+| 多聊天绑定 | 同一 Qoder 应用内的 frontend/backend 两个聊天分别绑定，`roles` 均显示 `desktop_session`/`qoder_native`/online |
+| 跨角色投递 | frontend 实际收到 Agents Chat 任务并继续执行；backend 收到只读检查任务，51 秒完成并返回 native 回执与 terminal 事件 |
+| agent-chat 兼容 | 原 agent-chat request 在 Qoder 重启后完成 result 回传；Agents Chat watcher 只唤醒配置的 frontend/backend，不误唤醒 leader |
+| 退出保护 | 关闭 Qoder 时检测到运行中任务并弹出“停止任务并退出”确认；未自动静默丢弃 |
+
 ## 0.5 多项目/角色中枢
 
 | 检查 | 结果 |

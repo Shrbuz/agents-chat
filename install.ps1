@@ -21,6 +21,7 @@ param(
     [string]$Version = "latest",
     [string]$Destination = (Join-Path $env:LOCALAPPDATA "Programs\AgentsChat"),
     [string]$LocalZip,
+    [string]$QoderPath,
     [switch]$NoStart,
     [switch]$NoShortcuts,
     [switch]$NoRegistry,
@@ -108,6 +109,57 @@ function New-Shortcut([string]$Path, [string]$Target, [string]$Arguments, [strin
     $link.WorkingDirectory = $WorkingDirectory
     $link.Description = $Description
     $link.Save()
+}
+
+function Find-Qoder([string]$Root, [string]$Explicit) {
+    $configured = Join-Path $Root "qoder-native-launch.local.json"
+    if ($Explicit -and (Test-Path $Explicit)) { return (Resolve-Path $Explicit).Path }
+    if (Test-Path $configured) {
+        try {
+            $value = (Get-Content $configured -Raw | ConvertFrom-Json).app
+            if ($value -and (Test-Path $value)) { return $value }
+        } catch { }
+    }
+    $candidates = @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Qoder\Qoder.exe"),
+        (Join-Path $env:ProgramFiles "Qoder\Qoder.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "Qoder\Qoder.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) { return (Resolve-Path $candidate).Path }
+    }
+    foreach ($base in @(
+        (Join-Path $env:LOCALAPPDATA "Programs\Qoder"),
+        (Join-Path $env:ProgramFiles "Qoder"))) {
+        $versions = Join-Path $base ".qoder-versions"
+        if (Test-Path $versions) {
+            $found = Get-ChildItem $versions -Directory | Sort-Object Name -Descending | ForEach-Object {
+                Join-Path $_.FullName "Qoder.exe"
+            } | Where-Object { Test-Path $_ } | Select-Object -First 1
+            if ($found) { return $found }
+        }
+    }
+    return $null
+}
+
+function Install-QoderShortcuts([string]$Root, [string]$Qoder) {
+    if (-not $Qoder) { return $false }
+    $settings = @{ app = $Qoder } | ConvertTo-Json -Compress
+    Set-Content -Path (Join-Path $Root "qoder-native-launch.local.json") -Value $settings -Encoding utf8
+    $exe = Join-Path $Root "AgentsChat.exe"
+    $desktop = [Environment]::GetFolderPath("Desktop")
+    $menu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+    foreach ($path in @((Join-Path $desktop "Qoder (Agents Chat).lnk"), (Join-Path $menu "Qoder (Agents Chat).lnk"))) {
+        $shell = New-Object -ComObject WScript.Shell
+        $link = $shell.CreateShortcut($path)
+        $link.TargetPath = $exe
+        $link.Arguments = "qoder"
+        $link.WorkingDirectory = $Root
+        $link.IconLocation = $Qoder + ",0"
+        $link.Description = "Start Qoder with the Agents Chat native connector"
+        $link.Save()
+    }
+    return $true
 }
 
 function Install-Shortcuts([string]$Root) {
@@ -214,6 +266,18 @@ try {
     $skillInstalled = $false
     if (-not $NoSkill) { Install-Skill $Destination; $skillInstalled = $true }
     if (-not $NoShortcuts) { Install-Shortcuts $Destination }
+    $qoder = Find-Qoder $Destination $QoderPath
+    if ($qoder) {
+        if (-not $NoShortcuts) {
+            [void](Install-QoderShortcuts $Destination $qoder)
+        } else {
+            @{ app = $qoder } | ConvertTo-Json -Compress |
+                Set-Content -Path (Join-Path $Destination "qoder-native-launch.local.json") -Encoding utf8
+        }
+        Write-Host ("    Qoder native entry: " + $qoder)
+    } else {
+        Write-Warning "Qoder not found. If you use Qoder, pass -QoderPath <Qoder.exe> to this installer."
+    }
     if (-not $NoRegistry) { Install-Registry $Destination $installedVersion }
     if ($Autostart) { Enable-Autostart $Destination }
 

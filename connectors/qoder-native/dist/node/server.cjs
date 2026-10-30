@@ -84,7 +84,9 @@ function createRunner(api,{state,call,readReport}={}) {
 async function activate(context) {
   const options=JSON.parse(await fs.readFile(path.resolve(__dirname,"../../bridge.local.json"),"utf8"));
   const state=options.state;
-  const agent=options.agent||"qoder";
+  // "*" (default) serves every qoder_native role bound in this hub. A concrete
+  // value remains supported for older single-role installs.
+  const only=options.agent&&options.agent!=="*"?new Set([options.agent]):null;
   const call=localClient(state);
   const runner=createRunner(context.api.chat,{state,call});
   let closed=false;
@@ -100,13 +102,16 @@ async function activate(context) {
   const loop=(async()=>{
     while(!closed) {
       try {
-        const targets=await call("targets");
-        const target=targets.find(t=>t.name===agent&&t.desktop_transport==="qoder_native");
-        if(!target){await delay(2000);continue;}
-        const job=await call("desktop_receive",{agent,session_id:target.session_id,seconds:40});
-        if(!job)continue;
-        if(job.action==="cancel")await runner.cancel(job);
-        else void runner.run(job).catch(error=>console.error("Agents Chat native:",error.message));
+        const targets=(await call("targets")).filter(t=>
+          t.desktop_transport==="qoder_native"&&t.session_id&&(!only||only.has(t.name)));
+        if(!targets.length){await delay(2000);continue;}
+        for(const target of targets){
+          const job=await call("desktop_receive",{agent:target.name,session_id:target.session_id,seconds:0});
+          if(!job)continue;
+          if(job.action==="cancel")await runner.cancel(job);
+          else void runner.run(job).catch(error=>console.error("Agents Chat native:",error.message));
+        }
+        await delay(750); // Local loopback only; no model request.
       }catch(error){if(!closed)await delay(2000);}
     }
   })();

@@ -15,8 +15,8 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyDescription("Multi-project, multi-role local agent collaboration hub")]
 [assembly: AssemblyCompany("Agents Chat")]
 [assembly: AssemblyProduct("Agents Chat")]
-[assembly: AssemblyVersion("0.5.0.0")]
-[assembly: AssemblyFileVersion("0.5.0.0")]
+[assembly: AssemblyVersion("0.5.1.0")]
+[assembly: AssemblyFileVersion("0.5.1.0")]
 
 namespace AgentsChatLauncher
 {
@@ -46,7 +46,13 @@ namespace AgentsChatLauncher
                     return RunPython(root, "uninstall.py", Slice(args, 1), true, true);
                 }
                 if (args.Length > 0 && EqualsCommand(args[0], "qoder"))
-                    return RunPython(root, "launch_qoder_native.py", Slice(args, 1), false, false);
+                {
+                    int code = RunPython(root, "launch_qoder_native.py", Slice(args, 1), false, false);
+                    if (code != 0)
+                        MessageBox.Show("Qoder 原生连接没有启动。\r\n请先完全退出 Qoder（包括托盘图标），再双击这个快捷方式。",
+                            "Agents Chat", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    return code;
+                }
                 bool openPanel = args.Length > 0 && (EqualsCommand(args[0], "ui") || EqualsCommand(args[0], "panel"));
                 if (openPanel)
                 {

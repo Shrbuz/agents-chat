@@ -28,7 +28,13 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/S
 Agent 会完成或指导完成项目、角色、项目入口、MCP 配置和桌面聊天绑定。安装器会打印这句话。
 已有聊天可能缓存旧技能，需要新开一个会话才会加载最新版本。当前安装器写入 Codex、Qoder、DSH 三个用户级技能目录；其他客户端可把 `tool-skill/SKILL.md` 放到其技能根目录。
 
-安装器会校验 Release 的 SHA-256，保留已有的 `config.json`/`data`，不需要管理员权限。卸载：
+安装器会校验 Release 的 SHA-256，保留已有的 `config.json`/`data`，不需要管理员权限。如果检测到 Qoder，安装器会写入它的路径并创建 `Qoder (Agents Chat)` 快捷方式；Qoder 必须从这个快捷方式启动才能加载原生扩展。未自动检测到时用：
+
+```powershell
+.\install.ps1 -QoderPath "C:\Program Files\Qoder\Qoder.exe"
+```
+
+卸载：
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\AgentsChat\uninstall.ps1"

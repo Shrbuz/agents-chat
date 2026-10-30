@@ -2,6 +2,7 @@
 import json
 import sys
 
+from . import __version__
 from .store import compact
 
 
@@ -52,7 +53,7 @@ def serve_mcp(client, agent, project=None):
                 if version not in ("2024-11-05", "2025-03-26", "2025-06-18"):
                     version = "2025-06-18"
                 result = {"protocolVersion": version, "capabilities": {"tools": {}},
-                          "serverInfo": {"name": "agents-chat-hub", "version": "0.5.0"}}
+                          "serverInfo": {"name": "agents-chat-hub", "version": __version__}}
             elif method == "ping":
                 result = {}
             elif method == "tools/list":

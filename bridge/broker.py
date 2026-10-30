@@ -9,6 +9,7 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from . import __version__
 from .runtime import run_task
 from .store import Store, TERMINAL, compact
 from .desktop_transport import DesktopHub
@@ -176,7 +177,7 @@ class Broker:
         if not isinstance(p, dict):
             raise ValueError("params_must_be_object")
         if method == "health":
-            return {"status": "running", "pid": os.getpid(), "mode": "multi_project_hub", "version": "0.5.0",
+            return {"status": "running", "pid": os.getpid(), "mode": "multi_project_hub", "version": __version__,
                     "states": self.store.stats(), "projects": len(self.config["projects"]),
                     "roles": len(self.endpoints), "recovered": self.recovered,
                     "agent_chat": self.agent_chat.status(),
