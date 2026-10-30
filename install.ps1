@@ -33,7 +33,7 @@ $ProgressPreference = "SilentlyContinue"
 try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch { }
 $AppName = "Agents Chat"
 $SkillName = "agents-chat-desktop"
-if ($Repo -eq "__REPO__" -and $env:AGENTS_CHAT_REPO) { $Repo = $env:AGENTS_CHAT_REPO }
+if ($Repo -notmatch "/" -and $env:AGENTS_CHAT_REPO) { $Repo = $env:AGENTS_CHAT_REPO }
 
 function Step([string]$Message) { Write-Host ("==> " + $Message) -ForegroundColor Cyan }
 function Fail([string]$Message) { throw ("Agents Chat install failed: " + $Message) }
@@ -63,7 +63,7 @@ function Stop-AgentsChat([string]$Root) {
 }
 
 function Get-Release([string]$Repository, [string]$Tag) {
-    if ([string]::IsNullOrWhiteSpace($Repository) -or $Repository -eq "__REPO__") {
+    if ([string]::IsNullOrWhiteSpace($Repository) -or $Repository -notmatch "/") {
         Fail "repository is not set; pass -Repo owner/repo or use the published release installer"
     }
     $headers = @{ "User-Agent" = "AgentsChatInstaller" }
