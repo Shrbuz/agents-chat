@@ -17,16 +17,21 @@ CMD 里等价的一行：
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/Shrbuz/agents-chat/releases/latest/download/install.ps1 | iex"
 ```
 
-安装器会下载自包含的便携包，安装到 `%LOCALAPPDATA%\Programs\AgentsChat`，并把用户级
-`agents-chat-desktop` 技能装到 Codex、Qoder、DSH 的技能目录，创建开始菜单/桌面入口，最后启动托盘。
-不需要管理员权限，不需要预装 Python、pip、Node（Codex/Qoder 自身仍由你安装）。
+安装器会下载自包含的便携包，安装到 `%LOCALAPPDATA%\Programs\AgentsChat`，并把两个用户级技能装到
+Codex、Qoder、DSH 的技能目录：
+
+- `agents-chat-desktop`：项目/角色/会话、`setup`、`send`、`join`、桌面唤醒；
+- `agent-chat`：文件总线、claim/租约、result/verify 和完整消息历史。
+
+`setup` 默认会为新项目初始化 `agent_chat` 总线（`--no-agent-chat` 可关闭），所以安装后的一句话说配置即可同时得到两套能力。
+安装器创建开始菜单/桌面入口并启动托盘，不需要管理员权限，不需要预装 Python、pip、Node（Codex/Qoder 自身仍由你安装）。
 
 装好后，在一个**新开的项目聊天**里说：
 
 > 用 agents-chat-desktop 技能把当前项目接成多角色桌面聊天协作，角色你按项目定，建好角色后分别在对应聊天里用 join 绑定，最后告诉我每个聊天该说什么。
 
 Agent 会完成或指导完成项目、角色、项目入口、MCP 配置和桌面聊天绑定。安装器会打印这句话。
-已有聊天可能缓存旧技能，需要新开一个会话才会加载最新版本。当前安装器写入 Codex、Qoder、DSH 三个用户级技能目录；其他客户端可把 `tool-skill/SKILL.md` 放到其技能根目录。
+已有聊天可能缓存旧技能，需要新开一个会话才会加载最新版本。当前安装器写入 Codex、Qoder、DSH 三个用户级技能目录；其他客户端可把 `tool-skill/SKILL.md` 和 `tool-skill/agent-chat/` 放到其技能根目录。
 
 安装器会校验 Release 的 SHA-256，保留已有的 `config.json`/`data`，不需要管理员权限。如果检测到 Qoder，安装器会写入它的路径并创建 `Qoder (Agents Chat)` 快捷方式；Qoder 必须从这个快捷方式启动才能加载原生扩展。未自动检测到时用：
 
@@ -41,6 +46,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 ```
 
 默认保留配置和数据；加 `-RemoveData` 一并删除，`-KeepSkill` 保留用户级技能。
+
+两个脚本都支持 `-DryRun`，只打印将要执行的动作而不写入任何文件，建议先跑一遍：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\AgentsChat\uninstall.ps1" -DryRun
+```
+
+安装器和卸载器都会校验目标目录：空路径、盘符根、用户目录及其上级目录一律拒绝；卸载只清理确实包含本程序文件的目录。
 
 从源码安装/开发：
 

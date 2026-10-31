@@ -120,13 +120,13 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 Codex 连接器还需要一次管理聊天准备的 app-tools 上下文（`codex-desktop.local.json`）；缺失时 `join` 会明确告警，不会回退 CLI。Qoder 原生扩展未在线时同样明确报错。
 
 - 绑定角色有排队/执行中任务时拒绝改绑。
-- 连接器按角色启动；Codex 每个角色一个进程，Qoder 原生扩展通过 `bridge.local.json` 的 `agent` 字段选择角色。
+- 连接器按角色启动；Codex 每个角色一个进程。Qoder 原生扩展的 `agent` 默认是 `"*"`，会轮询所有 `qoder_native` 绑定，因此同一个 Qoder 应用里的 frontend/backend 两个聊天可以同时被唤醒。旧值（单个角色名）仍然兼容。
 - Qoder 原生扩展必须从 Agents Chat 的“启动 Qoder 原生连接”入口启动；直接开 Qoder 不会加载开发扩展。
 - 连接器离线时明确报错，不回退 CLI；桌面任务保留原聊天上下文，不承诺 token 更低。
 
 ## 与 agent-chat skill 共存
 
-项目已有 `agent_chat/project.json` 时，setup 会自动写入 `agent_chat` 关联：
+安装器会同时安装 `agents-chat-desktop` 和 `agent-chat` 两个用户级技能。`setup` 默认会为新项目调用 `agent_chat` 的 `init` 创建文件总线（`--no-agent-chat` 关闭），然后写入关联：
 
 ```json
 "agent_chat": {
@@ -135,7 +135,7 @@ Codex 连接器还需要一次管理聊天准备的 app-tools 上下文（`codex
 }
 ```
 
-后台只在新 request/result/blocked/cancel/verify(fail) 事件出现时唤醒对应角色会话；claim、租约、result、verify 由该 skill 的 helper 执行。不要把同一请求同时通过两套系统各派一次。
+项目已有 `agent_chat/project.json` 时不会重建，只写入关联。后台只在新 request/result/blocked/cancel/verify(fail) 事件出现时唤醒对应角色会话；claim、租约、result、verify 由 `agent-chat` skill 的 helper 执行。同一个请求只能由一条链路派发，不要把同一任务同时通过两套系统各派一次。
 
 ## 故障与边界
 

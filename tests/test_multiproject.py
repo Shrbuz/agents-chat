@@ -171,6 +171,25 @@ class SetupTests(unittest.TestCase):
             text = (project / "AGENTS.md").read_text(encoding="utf-8")
             self.assertEqual(text.count("agents-chat:begin"), 1)
 
+    def test_setup_initializes_bundled_agent_chat(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "demo"
+            project.mkdir()
+            config_path = root / "config.json"
+            onboarding.setup(config_path, project, project="demo", roles=[
+                {"role": "backend", "adapter": "fixture", "description": "API"},
+                {"role": "frontend", "adapter": "fixture", "description": "UI"}],
+                state=root / "state", write_agents=True, with_agent_chat=True)
+            manifest = project / "agent_chat/project.json"
+            self.assertTrue(manifest.is_file(), "bundled agent-chat should initialize a bus")
+            data = json.loads(manifest.read_text(encoding="utf-8"))
+            self.assertEqual(data["project_id"], "demo")
+            self.assertEqual(set(data["roles"]), {"backend", "frontend"})
+            config = read_config(config_path)
+            self.assertEqual(config["projects"]["demo"]["agent_chat"]["roles"],
+                             {"backend": "backend", "frontend": "frontend"})
+
     def test_setup_links_existing_agent_chat_bus(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

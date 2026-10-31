@@ -26,7 +26,8 @@ param(
     [switch]$NoShortcuts,
     [switch]$NoRegistry,
     [switch]$NoSkill,
-    [switch]$Autostart
+    [switch]$Autostart,
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = "Stop"
@@ -38,6 +39,65 @@ if ($Repo -notmatch "/" -and $env:AGENTS_CHAT_REPO) { $Repo = $env:AGENTS_CHAT_R
 
 function Step([string]$Message) { Write-Host ("==> " + $Message) -ForegroundColor Cyan }
 function Fail([string]$Message) { throw ("Agents Chat install failed: " + $Message) }
+
+# Guard every path this script is allowed to delete or overwrite.
+# Without it, an empty -Destination silently became the current directory
+# (Path::GetFullPath("") returns the CWD in Windows PowerShell), and the
+# recursive removes below then ran against whatever that happened to be.
+function Assert-SafeDestination([string]$Path) {
+    if ([string]::IsNullOrWhiteSpace($Path)) {
+        Fail "destination is empty. Pass an explicit folder such as %LOCALAPPDATA%\Programs\AgentsChat."
+    }
+    $full = [System.IO.Path]::GetFullPath($Path)
+    if (-not [System.IO.Path]::IsPathRooted($full)) {
+        Fail ("destination must be an absolute path: " + $Path)
+    }
+    $full = $full.TrimEnd('\', '/')
+    if ($full -match '^[A-Za-z]:$' -or $full -match '^\\\\[^\\]+\\[^\\]+$') {
+        Fail ("refusing to use a drive or share root as the destination: " + $full)
+    }
+    $segments = @($full -split '[\\/]+' | Where-Object { $_ -ne '' })
+    if ($segments.Count -lt 3) {
+        Fail ("destination is too close to a root to be safe: " + $full + ". Use a dedicated folder.")
+    }
+    $guarded = @()
+    foreach ($name in @("USERPROFILE", "LOCALAPPDATA", "APPDATA", "ProgramData", "ProgramFiles", "WINDIR", "SystemRoot", "TEMP", "TMP", "PUBLIC")) {
+        $value = [Environment]::GetEnvironmentVariable($name)
+        if (-not [string]::IsNullOrWhiteSpace($value)) {
+            $guarded += ([System.IO.Path]::GetFullPath($value).TrimEnd('\', '/'))
+        }
+    }
+    foreach ($folder in @("Desktop", "MyDocuments", "MyPictures", "MyMusic", "MyVideos", "Favorites", "UserProfile")) {
+        try {
+            $value = [Environment]::GetFolderPath($folder)
+            if (-not [string]::IsNullOrWhiteSpace($value)) {
+                $guarded += ([System.IO.Path]::GetFullPath($value).TrimEnd('\', '/'))
+            }
+        } catch { }
+    }
+    foreach ($protected in @($guarded | Sort-Object -Unique)) {
+        if ($full -ieq $protected) {
+            Fail ("refusing to use a protected folder as the destination: " + $full)
+        }
+        if ($protected.StartsWith($full + '\', [StringComparison]::OrdinalIgnoreCase)) {
+            Fail ("refusing to use " + $full + " as the destination: it contains the protected folder " + $protected)
+        }
+    }
+    return $full
+}
+
+# Only ever delete a direct child of a verified destination, never a path that
+# could climb out of it.
+function Remove-InstallChild([string]$Root, [string]$Name) {
+    if ($Name -match '[\\/]' -or $Name -in @(".", "..")) {
+        Fail ("refusing to remove unexpected entry: " + $Name)
+    }
+    $target = Join-Path $Root $Name
+    if (([System.IO.Path]::GetFullPath($target)).TrimEnd('\', '/') -ieq $Root) {
+        Fail ("refusing to remove the destination root: " + $target)
+    }
+    Remove-Item $target -Recurse -Force
+}
 
 function Stop-AgentsChat([string]$Root) {
     try {
@@ -88,6 +148,11 @@ function Get-Release([string]$Repository, [string]$Tag) {
 function Install-Skill([string]$Root) {
     $source = Join-Path $Root "tool-skill\SKILL.md"
     if (-not (Test-Path $source)) { Write-Warning "skill source not found; skipped"; return }
+    if ([string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+        Write-Warning "USERPROFILE is not set; skill installation skipped"
+        return
+    }
+    $legacySource = Join-Path $Root "tool-skill\agent-chat"
     $roots = @(
         (Join-Path $env:USERPROFILE ".codex\skills"),
         (Join-Path $env:USERPROFILE ".qoder\skills"),
@@ -97,8 +162,14 @@ function Install-Skill([string]$Root) {
         $target = Join-Path $skills $SkillName
         New-Item -ItemType Directory -Force -Path $target | Out-Null
         Copy-Item -Path $source -Destination (Join-Path $target "SKILL.md") -Force
+        # Include the file-bus/claim/verify protocol as a companion skill.
+        # Keep a user-managed copy or junction untouched.
+        $legacy = Join-Path $skills "agent-chat"
+        if ((Test-Path $legacySource) -and -not (Test-Path $legacy)) {
+            Copy-Item -Path $legacySource -Destination $legacy -Recurse -Force
+        }
     }
-    Write-Host ("    skill installed for Codex/Qoder/DSH")
+    Write-Host ("    skills installed for Codex/Qoder/DSH (agents-chat-desktop + agent-chat)")
 }
 
 function New-Shortcut([string]$Path, [string]$Target, [string]$Arguments, [string]$WorkingDirectory, [string]$Description) {
@@ -194,7 +265,24 @@ function Enable-Autostart([string]$Root) {
     Write-Host "    autostart enabled"
 }
 
-$Destination = [System.IO.Path]::GetFullPath($Destination)
+$Destination = Assert-SafeDestination $Destination
+
+if ($DryRun) {
+    Write-Host ""
+    Write-Host ("DRY RUN: would install " + $(if ($LocalZip) { $LocalZip } else { "$Repo@$Version" }) + " into " + $Destination)
+    Write-Host "DRY RUN: validated the destination only; nothing was created, moved or deleted."
+    return
+}
+
+# Never write over a directory that is not ours. An install "somewhere else"
+# must not overwrite or remove files that belong to another product.
+if (Test-Path $Destination) {
+    $existing = @(Get-ChildItem $Destination -Force)
+    $foreign = @($existing | Where-Object { $_.Name -notin @("config.json", "config.local.json", "data", ".bridge") })
+    if ($foreign.Count -gt 0 -and -not (Test-Path (Join-Path $Destination "AgentsChat.exe"))) {
+        Fail ("destination is not empty and does not look like an Agents Chat install: " + $Destination)
+    }
+}
 
 $tempRoot = Join-Path $env:TEMP ("agents-chat-install-" + [guid]::NewGuid().ToString("N"))
 New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
@@ -258,7 +346,7 @@ try {
         $saved = Join-Path $backup $name
         if (Test-Path $saved) {
             $target = Join-Path $Destination $name
-            if (Test-Path $target) { Remove-Item $target -Recurse -Force }
+            if (Test-Path $target) { Remove-InstallChild $Destination $name }
             Copy-Item -Path $saved -Destination $target -Recurse -Force
         }
     }
@@ -311,5 +399,15 @@ try {
     }
 }
 finally {
-    try { Remove-Item $tempRoot -Recurse -Force -ErrorAction SilentlyContinue } catch { }
+    # Only remove the scratch folder this run created, and only when it really
+    # lives under the temp directory (an unset TEMP would otherwise resolve
+    # against the current working directory).
+    try {
+        $tempBase = [System.IO.Path]::GetFullPath([System.IO.Path]::GetTempPath()).TrimEnd('\', '/')
+        $scratch = [System.IO.Path]::GetFullPath($tempRoot).TrimEnd('\', '/')
+        $scratchName = Split-Path $scratch -Leaf
+        if ((Split-Path $scratch -Parent) -ieq $tempBase -and $scratchName.StartsWith("agents-chat-install-")) {
+            Remove-Item $scratch -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    } catch { }
 }

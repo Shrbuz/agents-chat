@@ -8,7 +8,9 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -170,8 +172,49 @@ def _write_mcp(state, config_path, project, role, address, cli):
     return filename
 
 
+def _agent_chat_helper(root):
+    candidates = [
+        Path.home() / ".agents/skills/agent-chat/scripts/agent_chat.py",
+        ROOT / "tool-skill/agent-chat/scripts/agent_chat.py",
+        Path(root) / "tools/agent-chat/scripts/agent_chat.py",
+        Path(root) / ".agents/skills/agent-chat/scripts/agent_chat.py",
+    ]
+    return next((path for path in candidates if path.is_file()), None)
+
+
+def ensure_agent_chat(project_root, project_id, roles):
+    """Initialize the bundled agent-chat file bus for a new project.
+
+    The companion skill remains the protocol owner; this only performs its
+    documented non-interactive init.  An existing bus is never rewritten.
+    """
+    root = Path(project_root).resolve()
+    manifest = root / "agent_chat" / "project.json"
+    if manifest.is_file():
+        return {"status": "existing", "bus": str(manifest.parent)}
+    helper = _agent_chat_helper(root)
+    if helper is None:
+        return {"status": "unavailable", "reason": "agent-chat helper not installed"}
+    specs = [spec for spec in roles if spec.get("role")]
+    if not specs:
+        return {"status": "skipped", "reason": "no roles"}
+    with tempfile.TemporaryDirectory() as temp:
+        roles_file = Path(temp) / "roles.json"
+        roles_file.write_text(json.dumps({spec["role"]: spec.get("description") or spec["role"]
+                                          for spec in specs}, ensure_ascii=False), encoding="utf-8")
+        process = subprocess.run(
+            [sys.executable, str(helper), "--project", str(root), "init",
+             "--project-id", project_id, "--roles-file", str(roles_file)],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60,
+            creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
+    if process.returncode != 0:
+        return {"status": "failed", "error": (process.stderr or process.stdout).strip()[:800]}
+    return {"status": "initialized", "bus": str(manifest.parent),
+            "helper": str(helper), "output": (process.stdout or "").strip()[:800]}
+
+
 def setup(config_path, project_root, project=None, name=None, description="",
-          roles=None, state=None, write_agents=True, force=False):
+          roles=None, state=None, write_agents=True, force=False, with_agent_chat=True):
     """Create or update a project and its role entries.
 
     ``roles`` is a list of ``{"role": ..., "adapter": ...}`` dictionaries.  An
@@ -207,7 +250,13 @@ def setup(config_path, project_root, project=None, name=None, description="",
         config_module.upsert_role(config_path, project, rid, endpoint)
         created.append(rid)
     raw_now = config_module.convert_raw(config_module.load_raw(config_path), config_path)
-    _configure_agent_chat(config_path, project, root, list(raw_now["projects"][project].get("roles", {})))
+    current_roles = raw_now["projects"][project].get("roles", {})
+    agent_chat_result = {"status": "disabled"}
+    if with_agent_chat:
+        specs = [{"role": rid, "description": (data.get("description") or rid)}
+                 for rid, data in current_roles.items()]
+        agent_chat_result = ensure_agent_chat(root, project, specs)
+    _configure_agent_chat(config_path, project, root, list(current_roles))
     normalized = config_module.read_config(config_path)
     project_entry = normalized["projects"][project]
     state = Path(state).resolve() if state else resolve_state(None, config_path)
@@ -245,6 +294,7 @@ def setup(config_path, project_root, project=None, name=None, description="",
     return {"config": str(config_path), "state": str(state), "project": project,
             "root": str(root), "created_roles": created, "kept_roles": kept,
             "entry": str(entry_path), "roles": list(entry["roles"].values()),
+            "agent_chat": agent_chat_result,
             "note": "Restart the hub to load new roles. Run the generated role prompt in each chat."}
 
 

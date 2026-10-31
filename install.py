@@ -137,6 +137,12 @@ def main():
         skill_path = skill_root / "agents-chat-desktop"
         skill_path.mkdir(parents=True,exist_ok=True)
         shutil.copy2(ROOT / "tool-skill/SKILL.md",skill_path / "SKILL.md")
+        # The full claim/lease/verify file-bus protocol is bundled as a
+        # companion skill.  Never overwrite a user-managed copy or junction.
+        legacy = skill_root / "agent-chat"
+        bundled = ROOT / "tool-skill/agent-chat"
+        if bundled.is_dir() and not legacy.exists():
+            shutil.copytree(bundled, legacy, ignore=shutil.ignore_patterns("__pycache__"))
     if not existing:
         shutil.copytree(ROOT / "examples", destination / "examples", dirs_exist_ok=True)
         for endpoint in config["endpoints"].values():
@@ -169,7 +175,7 @@ def main():
     create_shortcut(desktop / "Agents Chat.lnk", executable, "", destination)
     import winreg
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall\AgentsChat") as key:
-        for name, value in {"DisplayName": "Agents Chat", "DisplayVersion": "0.5.1", "InstallLocation": str(destination),
+        for name, value in {"DisplayName": "Agents Chat", "DisplayVersion": "0.5.2", "InstallLocation": str(destination),
                             "DisplayIcon": str(executable),
                             "UninstallString": subprocess.list2cmdline([str(executable), "uninstall"])}.items():
             winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)

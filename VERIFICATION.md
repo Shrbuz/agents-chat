@@ -2,6 +2,31 @@
 
 本文件只记录可公开复现的检查。真实桌面聊天 ID、任务 ID、业务项目路径和本机截图不进入开源仓库。
 
+## 0.5.2 安装器安全加固（2026-10-31）
+
+一次真实的安装器测试事故暴露了这两个脚本缺护栏：`[System.IO.Path]::GetFullPath("")` 在 Windows PowerShell 5.1 中返回**当前工作目录**，因此空的 `-Destination` 会让后续 `Remove-Item -Recurse -Force` 落在 CWD 上；而两个脚本对 `$Destination` 原本没有任何校验。
+
+| 检查 | 结果 |
+|---|---|
+| 目标校验 | 拒绝空/相对路径、盘符与共享根、少于 3 层的路径，以及等于或**包含** `USERPROFILE`/`LOCALAPPDATA`/`APPDATA`/`TEMP`/`ProgramFiles`/`WINDIR`、桌面/文档等受保护目录的路径 |
+| 拒绝用例 | 空 `-Destination`、`$env:USERPROFILE`、`C:\Users`、`C:\` 四种输入全部被拒绝，并给出可读原因 |
+| 删除约束 | 安装器只删 `$Destination` 的直接子项（`Remove-InstallChild`，拒绝 `..` 与路径分隔符）；卸载前要求目录内存在 `AgentsChat.exe` 与 `bridge.py`，否则拒绝删除 |
+| 归属保护 | 注册表 `InstallLocation` 与目标不一致时只警告并跳过快捷方式/注册表/技能清理，另一份安装保持可用；`-NoRegistry` 副本仍可正常卸载 |
+| 端到端 | 本地 zip 安装到临时目录、重复安装保留 `data` 标记文件、卸载保留配置与数据、`-RemoveData` 清理仅剩数据的目录，全部通过 |
+| 预演 | 两个脚本新增 `-DryRun`，只打印将执行的动作，不写入任何文件 |
+| 安装器自检 | 拒绝往“非空且没有 `AgentsChat.exe`”的陌生目录安装 |
+| 发布物 | `dist/` 与 `AgentsChat-Portable-0.5.2.zip` 已重建，仓库地址占位符 `__REPO__` 由 release workflow 注入 |
+
+## 0.5.2 开箱即用的双技能
+
+| 检查 | 结果 |
+|---|---|
+| 技能打包 | `tool-skill/agent-chat/` 随源码/便携包发布；安装器同时安装 `agents-chat-desktop` 和 `agent-chat` 到 Codex/Qoder/DSH 用户级技能目录 |
+| 用户技能保护 | 已存在或被 junction 管理的 `agent-chat` 目录不会被安装器覆盖 |
+| 自动初始化 | 新项目 `setup` 默认调用 `agent_chat.py init` 创建文件总线并写入关联；`--no-agent-chat` 可关闭；已有 `agent_chat/project.json` 不重建 |
+| 48 项测试 | 新增“bundled agent-chat 自动初始化”测试；其余 47 项回归通过 |
+| 兼容性 | Agents Chat 只唤醒配置了 `agent_chat` 映射的角色，leader 等不映射的角色不会被误跑成 CLI 任务 |
+
 ## 0.5.1 Qoder 原生多角色
 
 | 检查 | 结果 |
@@ -17,7 +42,7 @@
 
 | 检查 | 结果 |
 |---|---|
-| Python 自动化 | 47/47 通过：配置与地址解析、跨项目任务与回调、peers 白名单、session 注册/心跳、setup 幂等、agent-chat 唤醒、MCP 注册、CLI/桌面回归 |
+| Python 自动化 | 48/48 通过：配置与地址解析、跨项目任务与回调、peers 白名单、session 注册/心跳、setup 幂等、bundled agent-chat 初始化、agent-chat 唤醒、MCP 注册、CLI/桌面回归 |
 | v2 配置 | 新项目地址为 `项目.角色`；旧单项目配置保持 `codex`/`qoder` 原名；重名必须限定项目 |
 | 跨项目任务 | fixture 子进程真实执行：`alpha.backend → beta.frontend` 成功，结果回到 `alpha.backend` 收件箱 |
 | 跨项目回调 | `reply_mode=run` 可由另一项目的角色执行，回调目标为原发起角色 |

@@ -1,0 +1,6 @@
+interface:
+  display_name: "Agent Chat 协作"
+  short_description: "按项目规划角色会话与通信目录，跟踪任务、交接通知和验收结果"
+  default_prompt: "使用 $agent-chat，按当前项目分析或恢复角色分工，检查通信配置与待办，并明确下一步交接。"
+policy:
+  allow_implicit_invocation: true

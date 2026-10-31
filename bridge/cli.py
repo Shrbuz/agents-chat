@@ -16,7 +16,7 @@ from .onboarding import cli_command, role_prompt, setup as setup_project, update
 from .paths import ROOT, default_config, project_context, resolve_config, resolve_state
 from .store import compact
 
-VERSION = "0.5.1"
+VERSION = "0.5.2"
 
 
 def start_desktop_connectors(state, config_path=None):
@@ -347,6 +347,8 @@ def parser():
     s.add_argument("--adapter", default="codex", choices=("codex", "qoder", "codebuddy", "fixture"))
     s.add_argument("--force", action="store_true", help="Replace existing role runtime settings")
     s.add_argument("--no-agents", action="store_true")
+    s.add_argument("--no-agent-chat", action="store_true",
+                   help="Do not initialize the bundled agent-chat file bus")
     s.add_argument("--no-restart", action="store_true")
     return p
 
@@ -448,7 +450,8 @@ def main():
             result = setup_project(config, args.root, project=getattr(args, "project_local", None) or args.project,
                                    name=args.name,
                                    description=args.description, roles=roles, state=state,
-                                   write_agents=not args.no_agents, force=args.force)
+                                   write_agents=not args.no_agents, force=args.force,
+                                   with_agent_chat=not args.no_agent_chat)
             result.update(live_restart_if_running(state, config, not args.no_restart))
         else:
             raise ValueError("unknown_command")
