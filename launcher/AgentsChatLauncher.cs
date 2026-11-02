@@ -711,7 +711,7 @@ namespace AgentsChatLauncher
 
     internal sealed class StatusForm : Form
     {
-        private readonly TextBox list;
+        private readonly ListView list;
         private readonly Label summary;
         private readonly Label paths;
         private readonly Action startStop;
@@ -739,16 +739,21 @@ namespace AgentsChatLauncher
             summary.Text = "正在读取状态…";
             Controls.Add(summary);
 
-            list = new TextBox();
+            list = new ListView();
             list.Dock = DockStyle.Fill;
-            list.Multiline = true;
-            list.ReadOnly = true;
-            list.WordWrap = false;
-            list.ScrollBars = ScrollBars.Vertical;
-            list.BackColor = Color.White;
-            list.BorderStyle = BorderStyle.FixedSingle;
-            list.Font = new Font("Consolas", 9.5F);
-            list.Text = "正在读取状态…";
+            list.View = View.Details;
+            list.FullRowSelect = true;
+            list.GridLines = true;
+            list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+            list.HideSelection = false;
+            list.Font = new Font("Segoe UI", 9F);
+            list.Columns.Add("项目", 150);
+            list.Columns.Add("角色", 110);
+            list.Columns.Add("适配器", 70);
+            list.Columns.Add("模式", 170);
+            list.Columns.Add("会话", 50);
+            list.Columns.Add("队列", 50);
+            list.Columns.Add("职责", 380);
             Controls.Add(list);
 
             Panel buttons = new Panel();
@@ -821,7 +826,8 @@ namespace AgentsChatLauncher
             if (status == null)
             {
                 summary.Text = "后台未运行。点击“启动 / 停止后台”启动，或让 Agent 先用 setup 配置项目。";
-                list.Text = "（后台未运行）";
+                list.Items.Clear();
+                list.Items.Add(new ListViewItem("（后台未运行）"));
                 return;
             }
             Dictionary<string, object> health = TrayApp.Value(status, "health");
@@ -830,44 +836,43 @@ namespace AgentsChatLauncher
             Dictionary<string, object> states = health == null ? null : TrayApp.Value(health, "states");
             summary.Text = "运行中 · " + projects + " 个项目 / " + roles + " 个角色 · 等待 "
                 + (states == null ? 0 : TrayApp.Number(states, "queued")) + " · 执行 "
-                + (states == null ? 0 : TrayApp.Number(states, "running"));
-            StringBuilder text = new StringBuilder();
-            text.AppendLine(Pad("项目", 14)
-                + Pad("角色", 14)
-                + Pad("适配器", 9)
-                + Pad("模式", 18)
-                + Pad("会话", 6)
-                + Pad("队列", 7)
-                + "职责");
-            text.AppendLine(new String('-', 92));
+                + (states == null ? 0 : TrayApp.Number(states, "running"))
+                + (health != null && health.ContainsKey("version") ? " · v" + Convert.ToString(health["version"]) : "");
             Dictionary<string, object> rolesRoot = TrayApp.Value(status, "roles");
-            foreach (object projectObject in TrayApp.Sequence(rolesRoot == null ? null : rolesRoot.ContainsKey("projects") ? rolesRoot["projects"] : null))
+            list.BeginUpdate();
+            try
             {
-                Dictionary<string, object> project = projectObject as Dictionary<string, object>;
-                if (project == null) continue;
-                foreach (object roleObject in TrayApp.Sequence(project.ContainsKey("roles") ? project["roles"] : null))
+                list.Items.Clear();
+                foreach (object projectObject in TrayApp.Sequence(rolesRoot == null ? null : rolesRoot.ContainsKey("projects") ? rolesRoot["projects"] : null))
                 {
-                    Dictionary<string, object> role = roleObject as Dictionary<string, object>;
-                    if (role == null) continue;
-                    int sessions = 0;
-                    foreach (object session in TrayApp.Sequence(role.ContainsKey("sessions") ? role["sessions"] : null))
+                    Dictionary<string, object> project = projectObject as Dictionary<string, object>;
+                    if (project == null) continue;
+                    foreach (object roleObject in TrayApp.Sequence(project.ContainsKey("roles") ? project["roles"] : null))
                     {
-                        Dictionary<string, object> item = session as Dictionary<string, object>;
-                        if (item != null && Convert.ToBoolean(item.ContainsKey("online") ? item["online"] : false))
-                            sessions++;
+                        Dictionary<string, object> role = roleObject as Dictionary<string, object>;
+                        if (role == null) continue;
+                        int sessions = 0;
+                        foreach (object session in TrayApp.Sequence(role.ContainsKey("sessions") ? role["sessions"] : null))
+                        {
+                            Dictionary<string, object> item = session as Dictionary<string, object>;
+                            if (item != null && Convert.ToBoolean(item.ContainsKey("online") ? item["online"] : false))
+                                sessions++;
+                        }
+                        ListViewItem row = new ListViewItem(Convert.ToString(project["name"]));
+                        row.SubItems.Add(Convert.ToString(role["role"]));
+                        row.SubItems.Add(Convert.ToString(role["adapter"]));
+                        row.SubItems.Add(Convert.ToString(role["mode"]));
+                        row.SubItems.Add(sessions.ToString());
+                        row.SubItems.Add(Convert.ToBoolean(role.ContainsKey("pending") ? role["pending"] : false) ? "有" : "无");
+                        row.SubItems.Add(Convert.ToString(role["description"]));
+                        list.Items.Add(row);
                     }
-                    text.AppendLine(Pad(Convert.ToString(project["name"]), 14)
-                        + Pad(Convert.ToString(role["role"]), 14)
-                        + Pad(Convert.ToString(role["adapter"]), 9)
-                        + Pad(Convert.ToString(role["mode"]), 18)
-                        + Pad(sessions.ToString(), 6)
-                        + Pad(Convert.ToBoolean(role.ContainsKey("pending") ? role["pending"] : false) ? "有" : "无", 7)
-                        + Convert.ToString(role["description"]));
                 }
             }
-            list.Text = text.ToString();
-            list.SelectionStart = 0;
-            list.SelectionLength = 0;
+            finally
+            {
+                list.EndUpdate();
+            }
         }
 
         private static string Pad(string value, int width)
@@ -880,3 +885,4 @@ namespace AgentsChatLauncher
         }
     }
 }
+
