@@ -72,6 +72,12 @@ def copy_app(destination):
     if connector.is_dir():
         shutil.copytree(connector, destination / "connectors" / "qoder-native",
                         dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
+    # The DSH host plugin ships too: without it a DSH chat can only be driven by
+    # spawning a process per task, which is exactly what people come here to avoid.
+    dsh_host = ROOT / "connectors" / "dsh-host"
+    if dsh_host.is_dir():
+        shutil.copytree(dsh_host, destination / "connectors" / "dsh-host", dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns("__pycache__", "cordis.patch.yml"))
     for exe in ("AgentsChat.exe", "AgentsChat.Cli.exe"):
         shutil.copy2(ROOT / exe, destination / exe)
 
