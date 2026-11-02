@@ -59,6 +59,22 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 
 安装器和卸载器都会校验目标目录：空路径、盘符根、用户目录及其上级目录一律拒绝；卸载只清理确实包含本程序文件的目录。
 
+## macOS / Linux
+
+macOS 与 Linux 目前没有独立的便携包，从源码目录运行安装脚本：
+
+```bash
+sh install.sh            # 默认装到 ~/.local/opt/agents-chat
+sh install.sh --dry-run  # 只打印将要执行的动作
+sh install.sh --uninstall
+```
+
+- 需要 `python3` ≥ 3.11（macOS 可用 `xcode-select --install`）。
+- 只装**一份**到 `~/.local/opt/agents-chat`，再把这份链接进 `~/.codex/skills`、`~/.qoder/skills`、`~/.agents/skills`、`~/.claude/skills`（只链接已存在的目录；真实目录不覆盖，已指向别处的链接不动）。
+- 升级只需替换 `~/.local/opt/agents-chat/skill`，所有客户端立即生效；如果环境把 `ln -s` 退化成复制，脚本会显式告警。
+- macOS 默认装 launchd 常驻（`~/Library/LaunchAgents/com.agents-chat.hub.plist`），`--no-service` 可跳过；Linux 会打印 systemd 用户单元示例。
+- **限制**：无托盘、无桌面聊天绑定，角色以 CLI 任务执行——协作本身成立，但看不到消息投递进你正在用的聊天窗口。
+
 ## 文件总线协议（0.6）
 
 项目关联了 `agent_chat` 总线后，中枢**原生实现**同一套协议：事件是只增不改的 JSON 文件，`_state/bus.lock` 上加 OS 文件锁、写入走临时文件 + fsync + 原子改名，任务状态由事件重放得出。
