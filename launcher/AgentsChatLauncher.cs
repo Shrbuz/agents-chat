@@ -880,7 +880,7 @@ namespace AgentsChatLauncher
             return value.Length <= 8 ? value : value.Substring(0, 8) + "…";
         }
 
-        /** Which chat a role is bound to: its note when the client supplied one, plus a short id. */
+        /** Which chat a role is bound to: a readable default plus a short id. */
         private static string BindingText(Dictionary<string, object> role)
         {
             object sessionId = role.ContainsKey("session_id") ? role["session_id"] : null;
@@ -895,7 +895,15 @@ namespace AgentsChatLauncher
                 string description = Convert.ToString(item.ContainsKey("description") ? item["description"] : null);
                 if (!string.IsNullOrWhiteSpace(description) && description != "桌面聊天绑定") label = description;
             }
-            return (label == null ? "" : label + " · ") + ShortId(id);
+            // The connectors expose no chat title, so fall back to what the hub
+            // already knows: the role and the client it is bound through.
+            if (label == null)
+            {
+                string client = Convert.ToString(role.ContainsKey("desktop_transport") ? role["desktop_transport"] : null);
+                if (string.IsNullOrWhiteSpace(client)) client = "desktop";
+                label = Convert.ToString(role["role"]) + " · " + client;
+            }
+            return label + " · " + ShortId(id);
         }
 
         private static string Pad(string value, int width)
