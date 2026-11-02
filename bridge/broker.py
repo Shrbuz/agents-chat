@@ -12,6 +12,7 @@ from pathlib import Path
 
 from . import __version__
 from .runtime import run_task
+from . import titles
 from .store import Store, TERMINAL, compact
 from .desktop_transport import DesktopHub
 from .agentchat_bridge import AgentChatBridge
@@ -76,9 +77,10 @@ class Broker:
             if not (endpoint and binding.get("session_id")):
                 continue
             try:
-                # The transports expose no chat title, so the default session label
-                # is what the hub can prove: which role, through which client.
-                label = "%s · %s" % (endpoint["role"], binding.get("transport", "desktop"))
+                # Prefer the chat name the client itself shows; fall back to what
+                # the hub can prove (which role, through which client).
+                label = titles.desktop_label(binding.get("transport", "desktop"),
+                                             binding["session_id"], endpoint["role"])
                 self.store.register_session("desktop:" + binding["session_id"], endpoint["project"],
                                             endpoint["role"], endpoint["adapter"],
                                             binding.get("transport", "desktop"), label)
@@ -211,6 +213,8 @@ class Broker:
                     role["desktop_wakeup"] = internal in self.desktop.bindings and not self.desktop_input_disabled(internal)
                     role["desktop_transport"] = self.desktop.bindings.get(internal, {}).get("transport")
                     role["session_id"] = self.desktop.bindings.get(internal, {}).get("session_id")
+                    binding = self.desktop.bindings.get(internal, {})
+                    role["session_title"] = titles.desktop_title(binding.get("transport"), binding.get("session_id"))
                     role["pending"] = self.store.has_pending(internal)
             return {"projects": projects, "totals": self.store.stats()}
         if method == "targets":
@@ -489,4 +493,5 @@ def serve(state_dir, config_path):
                     time.sleep(.05)
         finally:
             broker.lock.close()
+
 
