@@ -2,6 +2,21 @@
 
 本文件只记录可公开复现的检查。真实桌面聊天 ID、任务 ID、业务项目路径和本机截图不进入开源仓库。
 
+## 0.6.0 文件总线协议原生并入
+
+此前中枢只监视 skill 的文件总线并据此创建唤醒任务，`claim`/租约/`result`/`verify` 仍在外部脚本里，任务状态存在两处。本版把协议实现进 `bridge`，总线文件仍是唯一真源。
+
+| 检查 | 结果 |
+|---|---|
+| 协议实现 | `bridge/bus.py`：每角色目录追加式事件、`_state/bus.lock` 上的 OS 文件锁、临时文件 + fsync + 原子改名；序列缺口、断链、重名、外来消息一律拒绝 |
+| 状态机 | `pending → in_progress → resolved → closed`；`verify(fail)` 回落 `pending`；`blocked` 释放领取；租约过期后旧 token 提交被拒，新会话可重新领取 |
+| CLI | `agents-chat bus` 提供 request/claim/renew/progress/blocked/result/verify/cancel/inbox/mark-read/status/show/paths |
+| 端到端 | 临时项目实测：request → claim（取得 token）→ result → verify pass → closed；`status` 无残留；另一会话 `inbox` 未读 2 条；旧 token 提交被拒 |
+| 对照基准 | 同一串操作分别用 `bridge/bus.py` 与随包 skill 的 `agent_chat.py` 执行，归一化后事件序列与最终任务状态逐条一致 |
+| 投影 | `store` 新增 `bus_state`（唤醒游标）与 `bus_tasks`（任务投影）；`sync_bus` 按重放结果整体替换，日志中消失的任务不会残留；损坏的总线跳过投影但不影响唤醒 |
+| 去重 | 不再写 `agent-chat-cursors.json` 旁路文件，唤醒游标存于 store |
+| 测试 | 69 项通过（新增 21 项：协议 10、CLI 5、投影 6） |
+
 ## 0.5.3 配套技能的解释器
 
 安装器宣称“不需要预装 Python”，但随包复制的 `agent-chat` 配套技能，其 `scripts/agent_chat.py` 依赖 `python`。目标机没有 Python 时，技能会被装好却无法执行，且没有任何提示。

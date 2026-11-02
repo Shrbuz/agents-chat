@@ -57,6 +57,23 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 
 安装器和卸载器都会校验目标目录：空路径、盘符根、用户目录及其上级目录一律拒绝；卸载只清理确实包含本程序文件的目录。
 
+## 文件总线协议（0.6）
+
+项目关联了 `agent_chat` 总线后，中枢**原生实现**同一套协议：事件是只增不改的 JSON 文件，`_state/bus.lock` 上加 OS 文件锁、写入走临时文件 + fsync + 原子改名，任务状态由事件重放得出。
+
+```powershell
+agents-chat bus request --from backend --to frontend --session be-1 `
+    --title "登录接口" --body "详情" --acceptance "返回 200" --priority P1
+agents-chat bus claim <task-id>   --role frontend --session fe-1     # 返回租约 token
+agents-chat bus result <task-id>  --role frontend --session fe-1 --token <token> --body "已完成" --evidence "测试通过"
+agents-chat bus verify <task-id>  --role backend  --session be-1 --outcome pass --body "复测通过"
+```
+
+- 状态机：`pending → in_progress → resolved → closed`；`verify --outcome fail` 回落 `pending`，`blocked` 释放领取。
+- 租约过期后旧 token 失效，另一个会话可以重新领取并拿到新 token。
+- 请求必须带 `--acceptance`，结果必须带 `--evidence`；`bus inbox` 按角色+会话记录已读，换会话不会漏消息。
+- 外部 Agent 仍可直接读写这些文件（随包安装的 `agent-chat` 技能就是这样一个客户端），中枢只做投影，不另存一份任务状态。
+
 从源码安装/开发：
 
 ```powershell

@@ -95,7 +95,8 @@ def _prompt(project, root, address, role, peers, cli, mcp_path, agent_chat=None)
         bus_role = next((name for name, local in (agent_chat.get("roles") or {}).items()
                          if local == role.get("role")), role.get("role"))
         chat_text = (f"- agent-chat 文件总线：`{agent_chat['bus']}`（本角色 `{bus_role}`）。"
-                     "任务领取、租约、result/verify 以该 skill 的协议为准；Agents Chat 只负责在新事件出现时唤醒对应会话。\n")
+                     "总线事件是唯一真源；本中枢原生实现同一套 request/claim 租约/result/verify 协议"
+                     "（`agents-chat bus ...`），也在新事件出现时唤醒对应会话。\n")
     return f"""# Agents Chat role: {address}
 
 You are `{address}` in project **{project}** ({root}).
