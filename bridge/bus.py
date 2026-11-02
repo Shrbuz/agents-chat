@@ -348,7 +348,13 @@ class Bus:
                     if role != task["assignee"] or not claim or claim["session"] != session or claim["token"] != token:
                         raise ValueError("Claim is missing, replaced, or belongs to another session.")
                     if parse_time(claim["expires_at"]) <= now:
-                        raise ValueError("Claim expired; reconcile work and claim again for a new token.")
+                        # Expiry only means someone else *may* take over. As long as the
+                        # same session still holds the token, nobody has, so a late
+                        # renewal or the final result is still that session's work —
+                        # rejecting it would punish a long task for being long.
+                        if task["status"] not in ("in_progress", "blocked"):
+                            raise ValueError("Claim expired; reconcile work and claim again for a new token.")
+                        data["late"] = True
                     if kind == "renew":
                         data = {"expires_at": stamp(now + timedelta(seconds=claim["lease_seconds"]))}
                     else:
@@ -425,6 +431,12 @@ class Bus:
                     continue
                 task = dict(original)
                 task["lease_expired"] = bool(task["claim"] and parse_time(task["claim"]["expires_at"]) <= now)
+                # What the operator actually needs to know: can this be picked up now?
+                task["claimable"] = task["status"] in ("pending", "blocked") or (
+                    task["status"] == "in_progress" and task["lease_expired"])
+                task["lease_seconds_left"] = (
+                    max(0, int((parse_time(task["claim"]["expires_at"]) - now).total_seconds()))
+                    if task["claim"] else 0)
                 task["overdue"] = bool(task["request"].get("due_at") and
                                        parse_time(task["request"]["due_at"]) <= now and task["status"] not in TERMINAL)
                 selected.append(task)

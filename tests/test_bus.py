@@ -100,7 +100,7 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bus.submit("verify", "backend", "be-1", task_id=task_id, data={"outcome": "pass", "body": "ok"})
 
-    def test_expired_lease_cannot_report_and_new_claim_wins(self):
+    def test_late_report_from_the_same_session_is_accepted(self):
         bus = self.bus
         task_id = request(bus)["task"]["task_id"]
         token = bus.submit("claim", "backend", "be-1", task_id=task_id,
@@ -111,11 +111,28 @@ class LifecycleTests(unittest.TestCase):
             if event["type"] == "claim":
                 event["data"]["expires_at"] = "2000-01-01T00:00:00.000000+00:00"
                 path.write_text(json.dumps(event, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        # The same session still holds the token and nobody took over, so the work
+        # finishing late is accepted instead of being thrown away.
+        late = bus.submit("result", "backend", "be-1", task_id=task_id, token=token,
+                          data={"body": "late", "evidence": ["x"]})
+        self.assertTrue(late["event"]["data"].get("late"))
+
+    def test_a_new_claim_takes_over_an_expired_lease(self):
+        bus = self.bus
+        task_id = request(bus)["task"]["task_id"]
+        token = bus.submit("claim", "backend", "be-1", task_id=task_id,
+                           lease_seconds=30)["event"]["data"]["token"]
+        for path in (Path(self.tmp.name) / "bus").glob("*_msg/*.json"):
+            event = json.loads(path.read_text(encoding="utf-8"))
+            if event["type"] == "claim":
+                event["data"]["expires_at"] = "2000-01-01T00:00:00.000000+00:00"
+                path.write_text(json.dumps(event, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        fresh = bus.submit("claim", "backend", "be-2", task_id=task_id)
+        self.assertNotEqual(fresh["event"]["data"]["token"], token)
+        # Once someone else holds the claim, the old token must be refused.
         with self.assertRaises(ValueError):
             bus.submit("result", "backend", "be-1", task_id=task_id, token=token,
                        data={"body": "late", "evidence": ["x"]})
-        fresh = bus.submit("claim", "backend", "be-2", task_id=task_id)
-        self.assertNotEqual(fresh["event"]["data"]["token"], token)
 
     def test_inbox_is_session_scoped_and_receipts_persist(self):
         bus = self.bus
@@ -229,3 +246,4 @@ class ConformanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

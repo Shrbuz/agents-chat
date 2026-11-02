@@ -115,6 +115,16 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 
 不要迁移：`*_msg/*.json`、`_state/receipts/`、旧序号。
 
+## 报错怎么讲给用户听
+
+用户看不懂原始报错，也不该被要求读。按这个顺序说：
+
+1. **一句人话**：发生了什么、要不要紧。例：「总线里有一条消息写错了，已经跳过，不影响其他人。」
+2. **一个动作**：你打算做什么（「我跑一下 repair 就好」），或者什么都不用做（「不用管」）。
+3. **原始输出**：只在用户主动要，或确实需要贴给别人排查时给；给的时候放最后一行，不要糊一屏。
+
+不要原样贴英文错误码、堆栈、成段 JSON。
+
 ## 谁对用户汇报（按项目定义，不要写死角色名）
 
 每个项目的角色名和权责由项目自己定：可能是 `leader`，也可能是 `master`、`CEO`、`owner`。**不要假设固定名字**。
@@ -186,5 +196,6 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 - [references/scheduling.md](references/scheduling.md)：定时与等待
 - [references/tester.md](references/tester.md)：验收角色做法
 - [scripts/agent_chat.py](scripts/agent_chat.py)：没有中枢时可直接运行的文件总线脚本
+
 
 
