@@ -115,6 +115,17 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 
 不要迁移：`*_msg/*.json`、`_state/receipts/`、旧序号。
 
+## 总线读不了怎么办
+
+坏消息不再让全员停摆：读取时会跳过读不懂的文件，并记录问题。发现异常时：
+
+1. `AgentsChat.Cli.exe --project <p> bus validate` —— 列出被跳过或有问题的消息；
+2. `... bus repair` —— 只看会移动哪些文件（默认不动作）；
+3. `... bus repair --apply` —— 把坏文件移进 `_quarantine-<时间>/`，不删除，事后可查；
+4. 重新跑原命令。
+
+写消息一律走 CLI 或技能脚本，不要手写文件名：`<序号:08位>_<message_id>.json` 是最容易被写坏的地方。
+
 ## 接管角色（用户说人话时）
 
 用户通常只会说“你接管 frontend”“我换了个会话，你继续当 backend”“这个聊天以后就是 tester”。按下面的顺序处理，不要让用户去记命令。
@@ -166,3 +177,4 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 - [references/scheduling.md](references/scheduling.md)：定时与等待
 - [references/tester.md](references/tester.md)：验收角色做法
 - [scripts/agent_chat.py](scripts/agent_chat.py)：没有中枢时可直接运行的文件总线脚本
+

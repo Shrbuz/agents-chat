@@ -101,6 +101,14 @@ def add_commands(sub):
     paths = bus_sub.add_parser("paths", help="Where the bus and mailboxes live")
     _project_option(paths)
 
+    validate = bus_sub.add_parser("validate", help="List messages the bus had to skip or repair")
+    _project_option(validate)
+
+    repair = bus_sub.add_parser("repair", help="Move unreadable messages aside so the bus reads cleanly")
+    _project_option(repair)
+    repair.add_argument("--apply", action="store_true",
+                        help="actually move the files (default: only report what would move)")
+
 
 def bus_root(config_path, project):
     """Resolve the shared bus directory declared by a project entry."""
@@ -183,4 +191,36 @@ def run(args, root):
         return bus.show(args.task_id)
     if command == "paths":
         return bus.paths()
+    if command == "validate":
+        bus.load()
+        return {"ok": not bus.problems, "problems": bus.problems}
+    if command == "repair":
+        return _repair(bus, apply=args.apply)
     raise ValueError("unknown_bus_command: " + str(command))
+
+
+def _repair(bus, apply=False):
+    """Quarantine files the loader had to skip, so nothing is hidden or deleted.
+
+    Keeping the files (rather than deleting them) matters: a bad message is still
+    evidence of what a client tried to write.
+    """
+    import shutil
+    import time as _time
+    bus.load()
+    skipped = [problem for problem in bus.problems if problem["kind"] == "skipped" and problem["file"]]
+    stamp = _time.strftime("%Y%m%d-%H%M%S")
+    target_dir = bus.root / ("_quarantine-" + stamp)
+    moved = []
+    for problem in skipped:
+        source = Path(problem["file"])
+        if not source.is_file():
+            continue
+        if apply:
+            target_dir.mkdir(parents=True, exist_ok=True)
+            destination = target_dir / (source.parent.name + "_" + source.name)
+            shutil.move(str(source), str(destination))
+            moved.append(str(destination))
+    return {"applied": bool(apply), "quarantined": moved,
+            "would_move": len(skipped) if not apply else len(moved),
+            "remaining": [problem for problem in bus.problems if problem["kind"] != "skipped"]}

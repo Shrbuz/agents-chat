@@ -158,17 +158,19 @@ class DamageTests(unittest.TestCase):
         self.root = Path(self.tmp.name) / "bus"
         self.bus = make_bus(self.root)
 
-    def test_gap_in_sequence_is_refused(self):
+    def test_gap_in_sequence_is_reported_not_fatal(self):
         task_id = request(self.bus)["task"]["task_id"]
         token = self.bus.submit("claim", "backend", "be-1", task_id=task_id)["event"]["data"]["token"]
         self.bus.submit("result", "backend", "be-1", task_id=task_id, token=token,
                         data={"body": "done", "evidence": ["x"]})
-        # Remove the claim in the middle: the remaining sequences 1 and 3 leave a gap,
-        # so replay must refuse instead of silently rebuilding a different history.
+        # Removing the claim leaves a gap. The bus stays usable -- one damaged
+        # message must not stop every role -- but the gap is reported.
         ordered = sorted(self.root.glob("*_msg/*.json"), key=lambda p: p.name)
         ordered[1].unlink()
-        with self.assertRaises(ValueError):
-            self.bus.load()
+        events, tasks = self.bus.load()
+        kinds = [problem["kind"] for problem in self.bus.problems]
+        self.assertIn("sequence_gap", kinds)
+        self.assertEqual(len(events), 2)
 
     def test_deleted_tail_is_not_invented(self):
         # A missing newest event is a consistent prefix; the bus must not fabricate it.

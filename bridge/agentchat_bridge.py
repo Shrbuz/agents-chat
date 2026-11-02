@@ -223,6 +223,5 @@ class AgentChatBridge:
         helper_text = (f'python "{helper}" --project "{project["root"]}" '
                        f'inbox --role {bus_role} --session <你的会话ID>') if helper else \
             "用项目内的 agent-chat helper 执行 inbox/claim/result/verify"
-        return (f"Agents Chat 唤醒：{action}，来自 {event.get('from')}，task {str(event.get('task_id'))[:8]}。\n"
-                "按项目 agent-chat 规则处理收件箱里这条事件（claim → 处理 → result），不要重复派发。\n"
-                f"收件箱：{helper_text}")
+        return (f"收到一条 Agents Chat 唤醒（{action}），去收件箱领取。\n"
+                f"python \"{helper}\" --project \"{project['root']}\" inbox --role {bus_role} --session <你的会话ID>")

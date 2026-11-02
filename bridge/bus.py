@@ -186,45 +186,72 @@ class Bus:
             yield
 
     def load(self):
-        """Replay every event; any structural damage is an error, never a guess."""
+        """Replay every event; damaged messages are reported, never guessed at.
+
+        A single malformed file used to make the whole bus unreadable, which stops
+        every role at once. Bad files are skipped and listed in ``self.problems``
+        so that ``validate``/``repair`` can deal with them while everyone else
+        keeps working.
+        """
         events = []
         message_ids, sequences = set(), set()
+        self.problems = []
         for folder in self.root.glob("*_msg"):
             if folder.resolve() not in self.mailboxes.values() and any(folder.glob("*.json")):
                 raise ValueError("History found in an unconfigured mailbox; restore the role configuration first.")
         for recipient, folder in self.mailboxes.items():
             for path in folder.glob("*.json"):
-                event = read_json(path)
-                if not isinstance(event, dict):
-                    raise ValueError(f"Message must be a JSON object: {path}")
-                if event.get("schema_version") != SCHEMA_VERSION or event.get("project_id") != self.project_id:
-                    raise ValueError(f"Foreign or unsupported message: {path}")
-                message_id = uuid_text(event["message_id"])
-                uuid_text(event["task_id"])
-                seq = event["sequence"]
-                if not isinstance(seq, int) or isinstance(seq, bool) or seq <= 0:
-                    raise ValueError(f"Invalid event sequence: {path}")
-                if event.get("to") != recipient or event.get("from") not in self.mailboxes:
-                    raise ValueError(f"Invalid message routing: {path}")
-                if path.name != f"{seq:08d}_{message_id}.json":
-                    raise ValueError(f"Message filename does not match event: {path}")
-                parse_time(event["created_at"])
-                if message_id in message_ids or seq in sequences:
-                    raise ValueError("Duplicate event identity/sequence; inspect the bus before continuing.")
-                message_ids.add(message_id)
-                sequences.add(seq)
-                events.append(event)
+                event = self._read_event(path, recipient, message_ids, sequences)
+                if event is not None:
+                    events.append(event)
         events.sort(key=lambda e: e["sequence"])
         tasks = {}
-        for expected_sequence, event in enumerate(events, 1):
-            if event["sequence"] != expected_sequence:
-                raise ValueError("Event sequence has a gap; restore missing messages before continuing.")
+        previous_sequence = 0
+        for event in events:
+            if event["sequence"] != previous_sequence + 1:
+                self._problem(event.get("_path"), "sequence_gap",
+                              "序号不连续：上一条是 %d，这条是 %d" % (previous_sequence, event["sequence"]))
+            previous_sequence = event["sequence"]
             previous = tasks.get(event["task_id"])
             expected_reply = previous["last_message_id"] if previous else None
             if event.get("in_reply_to") != expected_reply:
-                raise ValueError("Event history has a broken reply chain.")
+                self._problem(event.get("_path"), "broken_chain",
+                              "回复链对不上：这条说回复 %s，按顺序应是 %s" % (event.get("in_reply_to"), expected_reply))
             self.apply(tasks, event)
+        for event in events:
+            event.pop("_path", None)
         return events, tasks
+
+    def _problem(self, path, kind, detail):
+        self.problems.append({"file": str(path) if path else "", "kind": kind, "detail": detail})
+
+    def _read_event(self, path, recipient, message_ids, sequences):
+        """Return the event, or None when the file must be skipped."""
+        try:
+            event = read_json(path)
+            if not isinstance(event, dict):
+                raise ValueError("不是一个 JSON 对象")
+            if event.get("schema_version") != SCHEMA_VERSION or event.get("project_id") != self.project_id:
+                raise ValueError("不是本项目的消息，或协议版本不符")
+            message_id = uuid_text(event["message_id"])
+            uuid_text(event["task_id"])
+            seq = event["sequence"]
+            if not isinstance(seq, int) or isinstance(seq, bool) or seq <= 0:
+                raise ValueError("序号无效")
+            if event.get("to") != recipient or event.get("from") not in self.mailboxes:
+                raise ValueError("收发角色不在配置里")
+            if path.name != f"{seq:08d}_{message_id}.json":
+                raise ValueError("文件名与内容里的序号/消息ID不一致（请用 CLI 写消息，不要手写文件名）")
+            parse_time(event["created_at"])
+            if message_id in message_ids or seq in sequences:
+                raise ValueError("消息ID或序号重复")
+        except (OSError, ValueError, KeyError) as exc:
+            self._problem(path, "skipped", str(exc))
+            return None
+        message_ids.add(message_id)
+        sequences.add(seq)
+        event["_path"] = str(path)
+        return event
 
     @staticmethod
     def apply(tasks, event):
