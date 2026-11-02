@@ -89,6 +89,18 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 - 请求必须带 `--acceptance`，结果必须带 `--evidence`。
 - 协议细节见 [references/protocol.md](references/protocol.md)，完整命令见 [references/commands.md](references/commands.md)。
 
+## 总线数据迁移（不要合并旧消息）
+
+换总线或重建总线时，**只迁移元数据，绝不合并消息文件**：
+
+- 旧总线的消息往往不合协议（未知类型 `handoff`/`notice`/`assign`/`ping`、序号重复、文件名与 `message_id` 不一致）；
+- 只要混入一条，`load` 就会整体失败，所有客户端（含 DSH 插件）都读不了；
+- 序号是全局唯一的，旧序号不能在新总线里复用。
+
+可以迁移：`project.json` 里的 `role_descriptions`、`collaboration_notes`、`production` 等**非消息字段**，以及缺失的角色定义（补到 `roles` 映射并建立对应邮箱目录）。
+
+不要迁移：`*_msg/*.json`、`_state/receipts/`、旧序号。
+
 ## 接管角色（用户说人话时）
 
 用户通常只会说“你接管 frontend”“我换了个会话，你继续当 backend”“这个聊天以后就是 tester”。按下面的顺序处理，不要让用户去记命令。

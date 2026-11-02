@@ -832,7 +832,13 @@ namespace AgentsChatLauncher
                 + (states == null ? 0 : TrayApp.Number(states, "queued")) + " · 执行 "
                 + (states == null ? 0 : TrayApp.Number(states, "running"));
             StringBuilder text = new StringBuilder();
-            text.AppendLine("项目          角色          适配器   模式              会话   队列   职责");
+            text.AppendLine(Pad("项目", 14)
+                + Pad("角色", 14)
+                + Pad("适配器", 9)
+                + Pad("模式", 18)
+                + Pad("会话", 6)
+                + Pad("队列", 7)
+                + "职责");
             text.AppendLine(new String('-', 92));
             Dictionary<string, object> rolesRoot = TrayApp.Value(status, "roles");
             foreach (object projectObject in TrayApp.Sequence(rolesRoot == null ? null : rolesRoot.ContainsKey("projects") ? rolesRoot["projects"] : null))
