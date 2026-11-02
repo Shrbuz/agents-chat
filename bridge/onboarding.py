@@ -285,6 +285,18 @@ def setup(config_path, project_root, project=None, name=None, description="",
             _prompt(project, str(root), address, endpoint, endpoint.get("peers", []), cli_text, mcp,
                     project_entry.get("agent_chat")),
             encoding="utf-8")
+    # Hand back the exact sentences to use next, so a chat does not have to
+    # invent wording (or stop and ask which dispatch path applies).
+    role_ids = list(entry["roles"])
+    phrases = {}
+    for rid in role_ids:
+        peer = next((other for other in role_ids if other != rid), rid)
+        phrases[rid] = {
+            "join": f"join 成 {rid}",
+            "dispatch": f"给 {peer} 派活：<一句话任务>，验收标准是 <可验证的条件>。",
+            "verify": f"看看 {peer} 那单完成没，把结果和证据列出来，通过了就 verify pass。",
+        }
+    bus_mode = agent_chat_result.get("status") in ("existing", "initialized")
     if "default_role" not in entry:
         entry["default_role"] = next(iter(entry["roles"]), None)
     entry_path = root / ".agents-chat" / "project.json"
@@ -296,6 +308,8 @@ def setup(config_path, project_root, project=None, name=None, description="",
             "root": str(root), "created_roles": created, "kept_roles": kept,
             "entry": str(entry_path), "roles": list(entry["roles"].values()),
             "agent_chat": agent_chat_result,
+            "mode": "bus" if bus_mode else "queue",
+            "phrases": phrases,
             "note": "Restart the hub to load new roles. Run the generated role prompt in each chat."}
 
 

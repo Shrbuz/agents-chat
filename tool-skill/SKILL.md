@@ -36,7 +36,12 @@ Agents Chat 在本机后台常驻，统一管理多个项目。每个项目有�
 & $cli --config <hub配置> setup --root <项目目录> --name <项目名> --role backend --role frontend
 ```
 
-`setup` 会生成 `.agents-chat/project.json`、角色提示词、`AGENTS.md` 标记块和每角色 MCP 配置；项目已有 `agent_chat/project.json` 时**直接关联，不重建**（返回 `status: existing`）。完成后把每个角色的提示词贴给用户，并说明每个聊天该说什么。
+`setup` 会生成 `.agents-chat/project.json`、角色提示词、`AGENTS.md` 标记块和每角色 MCP 配置；项目已有 `agent_chat/project.json` 时**直接关联，不重建**（返回 `status: existing`）。
+
+返回值里有两个字段要直接用，不要自己改写：
+
+- `mode`：`bus` 表示本项目走文件总线派活，`queue` 表示走中枢队列——它就是这条项目该用的链路，不需要再问用户。
+- `phrases`：每个角色的 `join` / `dispatch` / `verify` 原话，逐字贴给用户，让他在对应聊天里说。
 
 **“给 <角色> 派活：……”**
 
