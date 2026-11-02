@@ -149,7 +149,12 @@ class Broker:
                     binding = self.desktop.bindings.get(name)
                     if binding:
                         from .runtime import make_prompt
-                        state, result = self.desktop.dispatch(task, binding, make_prompt(task, endpoint), self.store.cancelled, self.stop)
+                        # A wakeup is a notification: if it runs long, leave the
+                        # chat alone instead of interrupting work in progress.
+                        interrupt = task["payload"].get("kind") != "agent_chat_wakeup"
+                        state, result = self.desktop.dispatch(task, binding, make_prompt(task, endpoint),
+                                                             self.store.cancelled, self.stop,
+                                                             interrupt_on_timeout=interrupt)
                         result = {**result, "mode": "desktop_session", "session_id": binding["session_id"]}
                         run_dir = self.state_dir / "runs" / task["id"]
                         run_dir.mkdir(parents=True, exist_ok=True)

@@ -217,7 +217,7 @@ class AgentChatBridge:
                     # is retried, while other roles keep being woken.
                     break
                 prompt = self._prompt(project, bus_role, role, path, event, action)
-                payload = {"prompt": prompt, "timeout": 180, "context": [], "reply_mode": "mailbox",
+                payload = {"prompt": prompt, "timeout": 1800, "context": [], "reply_mode": "mailbox",
                            "queue_ttl": 3600, "notify": False, "kind": "agent_chat_wakeup"}
                 self.store.enqueue(WAKEUP_SENDER, role["address"], "agentchat:" + str(event.get("message_id") or path.name),
                                    payload)
@@ -265,4 +265,5 @@ class AgentChatBridge:
             "用项目内的 agent-chat helper 执行 inbox/claim/result/verify"
         return (f"收到一条 Agents Chat 唤醒（{action}），去收件箱领取。\n"
                 f"python \"{helper}\" --project \"{project['root']}\" inbox --role {bus_role} --session <你的会话ID>")
+
 

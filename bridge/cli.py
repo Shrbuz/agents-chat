@@ -264,7 +264,7 @@ def parser():
         s = sub.add_parser(name)
         s.add_argument("task_id")
         if name == "wait":
-            s.add_argument("--timeout", type=int, default=300)
+            s.add_argument("--timeout", type=int, default=1800)
     for name in ("inbox", "ack"):
         s = sub.add_parser(name)
         _project_option(s)
@@ -553,3 +553,4 @@ def role_command(args, config, state, project):
             raise ValueError("project_required")
         return Client(state).call("desktop_bind", agent=args.role, project=project, session_id=None)
     raise ValueError("unknown_role_command")
+

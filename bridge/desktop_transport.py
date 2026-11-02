@@ -147,7 +147,7 @@ class DesktopHub:
                 raise
             self.cv.notify_all()
 
-    def dispatch(self, task, binding, prompt, cancelled, stop):
+    def dispatch(self, task, binding, prompt, cancelled, stop, interrupt_on_timeout=True):
         task_id = task["id"]
         deadline = time.monotonic() + task["payload"]["timeout"]
         job = {"agent": task["target"], "session_id": binding["session_id"], "task_id": task_id,
@@ -161,6 +161,14 @@ class DesktopHub:
                     if stop.is_set() or cancelled(task_id) or time.monotonic() >= deadline:
                         # Termination requests are cooperative; no claim of rollback or process kill.
                         state = "interrupted" if stop.is_set() else "cancelled" if cancelled(task_id) else "timed_out"
+                        expired = time.monotonic() >= deadline and not stop.is_set() and not cancelled(task_id)
+                        if expired and not interrupt_on_timeout:
+                            # The sender only asked for a notification; the chat is
+                            # still working and must not be interrupted for it.
+                            return state, {"error": "desktop_" + state,
+                                           "summary": "通知已送达，执行仍在继续（未打断）。",
+                                           "session_id": binding["session_id"],
+                                           "delivery_uncertain": job["received"]}
                         job["action"] = "cancel"
                         self.cv.notify_all()
                         self.cv.wait_for(lambda: job["cancel_sent"], timeout=2)
