@@ -89,6 +89,10 @@ def command_for(endpoint, run_dir):
         command += endpoint.get("args", []) + ["-"]
     elif adapter in ("qoder", "codebuddy"):
         command += ["-p", "--output-format", "json"] + endpoint.get("args", [])
+    elif adapter == "dsh":
+        # `dsh headless` answers one task and prints the final message; "-"
+        # reads the task from stdin like the codex adapter does.
+        command += ["headless"] + endpoint.get("args", []) + ["-"]
     elif adapter == "fixture":
         command += endpoint.get("args", [])
     else:
@@ -117,6 +121,12 @@ def parse_result(adapter, stdout, final_file):
                 summary = item.get("text", "")
         if final_file.exists():
             summary = final_file.read_text(encoding="utf-8", errors="replace")
+    elif adapter == "dsh":
+        # The headless profile prints exactly the final message to stdout.
+        summary = stdout.strip()
+        ok = bool(summary)
+        if not ok:
+            error = "empty_runtime_result"
     else:
         try:
             result = json.loads(stdout)
@@ -176,6 +186,10 @@ def run_task(task, endpoint, state_dir, cancelled, stop):
         env["PYTHONIOENCODING"] = "utf-8"
         env["AGENT_BRIDGE_TASK_ID"] = task["id"]
         env["AGENT_BRIDGE_STATE"] = str(Path(state_dir).resolve())
+        if endpoint["adapter"] == "dsh":
+            # The DSH CLI is the app launcher in Node mode; without this the
+            # child would boot the desktop app instead of running the task.
+            env["ELECTRON_RUN_AS_NODE"] = "1"
         flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
         process = subprocess.Popen(command, cwd=endpoint["cwd"], stdin=subprocess.PIPE,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,

@@ -246,3 +246,13 @@ python build_portable.py
 
 源码目录的 `config.local.json` 是旧的单项目格式，仍被支持：其中的 `codex`/`qoder` 保持原名，不会破坏已有状态和桌面绑定。新增项目后配置会自动升级为 v2 的 `projects` 格式，旧项目角色继续使用原名。
 
+
+## DSH 适配器（0.6.4）
+
+`setup --role 'leader:dsh:...'` 会把任务交给 `dsh headless` 一次性执行，结果自动回到发起方。
+
+- `dsh` 命令行本身是 `.cmd` 包装器，配置层拒绝 shell 包装器，所以适配器解析出真正的
+  `DeepSeek Harness.exe --expose-internals <cli.js>` 并以 `ELECTRON_RUN_AS_NODE=1` 启动。
+- headless profile 默认走 `deepseek-official` 路由；用它跑你自己的 provider 时，需要在该 profile 的
+  `cordis.patch.yml` 里指定 provider，并把对应密钥放进环境变量（headless 读不到 GUI 的账号凭据时）。
+- 这是**无人值守执行**：任务在后台跑完把结果回传，不会注入你正在使用的 DSH 聊天窗口。

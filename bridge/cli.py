@@ -314,7 +314,7 @@ def parser():
     add = role_sub.add_parser("add")
     _project_option(add)
     add.add_argument("--role", required=True)
-    add.add_argument("--adapter", default="codex", choices=("codex", "qoder", "codebuddy", "fixture"))
+    add.add_argument("--adapter", default="codex", choices=("codex", "qoder", "codebuddy", "dsh", "fixture"))
     add.add_argument("--cwd")
     add.add_argument("--description", default="")
     add.add_argument("--peer", action="append", default=[])
@@ -346,7 +346,7 @@ def parser():
     s.add_argument("--name")
     s.add_argument("--description", default="")
     s.add_argument("--role", action="append", default=[], help="role[:adapter[:description]], repeatable")
-    s.add_argument("--adapter", default="codex", choices=("codex", "qoder", "codebuddy", "fixture"))
+    s.add_argument("--adapter", default="codex", choices=("codex", "qoder", "codebuddy", "dsh", "fixture"))
     s.add_argument("--force", action="store_true", help="Replace existing role runtime settings")
     s.add_argument("--no-agents", action="store_true")
     s.add_argument("--no-agent-chat", action="store_true",

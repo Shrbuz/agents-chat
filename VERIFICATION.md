@@ -2,6 +2,17 @@
 
 本文件只记录可公开复现的检查。真实桌面聊天 ID、任务 ID、业务项目路径和本机截图不进入开源仓库。
 
+## 0.6.4 DSH 适配器
+
+| 检查 | 结果 |
+|---|---|
+| 适配器 | 新增 `dsh`：argv 为 `<exe> --expose-internals <cli.js> headless -`，任务经 stdin 传入，stdout 即最终答复 |
+| 启动环境 | 子进程注入 `ELECTRON_RUN_AS_NODE=1`，否则会启动桌面应用而不是执行任务 |
+| 发现命令 | 由 `dsh.cmd` 的位置推导安装根与 `app.asar` 内的入口，满足"原生 exe"要求 |
+| 实测 | 临时项目 + 临时 hub：`send → queued → succeeded`，`summary="OK"`，`runtime=dsh`，2.67 秒 |
+| 凭据 | headless 默认 `deepseek-official`，需该路由的密钥；换成自有 provider 时要在 headless profile 的 patch 里指定并把密钥放进环境 |
+| 边界 | 无人值守执行，不注入正在使用的 DSH 聊天；DSH 仍无桌面绑定传输 |
+| 回归 | 76 项测试通过（新增 4 项 dsh 适配器测试） |
 ## 0.6.3 macOS/Linux 安装与链接式技能
 
 此前只有 Windows 安装器，且四处技能目录各存一份副本，升级时容易版本不一致。

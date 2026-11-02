@@ -55,6 +55,22 @@ def discover_command(adapter):
         for bundle in candidates:
             if node and bundle.is_file():
                 return [node, str(bundle)]
+    if adapter == "dsh":
+        # `dsh` is a cmd wrapper around the Electron launcher; the config layer
+        # rejects shell wrappers, so resolve the native executable and its entry
+        # script the wrapper would run.
+        found = shutil.which("dsh") or shutil.which("dsh.cmd")
+        if found:
+            wrapper = Path(found).resolve()
+            if wrapper.suffix.lower() in (".cmd", ".bat"):
+                resources = wrapper.parents[3]
+                exe = wrapper.parents[4] / "DeepSeek Harness.exe"
+                entry = (resources / "app.asar" / "dsh" / "node_modules" / "@deepseek-ai"
+                         / "dsh-desktop-host" / "lib" / "cli.js")
+                if exe.is_file():
+                    return [str(exe), "--expose-internals", str(entry)]
+            else:
+                return [str(wrapper)]
     if adapter == "codebuddy":
         found = shutil.which("codebuddy") or shutil.which("codebuddy.exe")
         if found:

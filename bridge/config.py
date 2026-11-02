@@ -28,7 +28,7 @@ ENDPOINT_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 PROJECT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$")
 ROLE_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$")
 SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-ADAPTERS = ("codex", "qoder", "codebuddy", "fixture")
+ADAPTERS = ("codex", "qoder", "codebuddy", "dsh", "fixture")
 
 
 class ConfigError(ValueError):
