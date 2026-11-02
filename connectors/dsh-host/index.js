@@ -19,6 +19,7 @@
 
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 
 export const name = 'agents-chat-dsh'
@@ -63,9 +64,44 @@ function userMessage(text, id) {
 }
 
 /**
- * Talk to the hub over its local HTTP API, the same one the Qoder and Codex
- * connectors use. The endpoint file carries both the URL and the bearer token.
+ * Sessions DSH keeps on disk, newest first, with the title the user sees.
+ * Sessions this plugin created itself are skipped: the point is to attach to
+ * the chat a person is actually looking at.
  */
+function dshSessions() {
+  const dir = path.join(os.homedir(), '.dsh', 'storages', 'session_projcache', 'sessions')
+  let names = []
+  try {
+    names = fs.readdirSync(dir)
+  } catch {
+    return []
+  }
+  const found = []
+  for (const name of names) {
+    if (!name.endsWith('.json')) continue
+    const id = name.slice(0, -5)
+    if (id.startsWith('agents-chat-')) continue
+    const entry = path.join(dir, name)
+    try {
+      const data = JSON.parse(fs.readFileSync(entry, 'utf8'))
+      const title = data?.record?.rows?.title?.val
+      if (!title) continue
+      const mtime = fs.statSync(entry).mtimeMs
+      if (Date.now() - mtime > 7 * 24 * 3600 * 1000) continue
+      found.push({ id, title: String(title), mtime })
+    } catch {
+      // A half-written cache entry is not a reason to skip discovery entirely.
+    }
+  }
+  return found.sort((left, right) => right.mtime - left.mtime)
+}
+
+/** Newest session whose title names the role, e.g. CMS_Tester for tester. */
+function sessionForRole(role) {
+  const needle = role.toLowerCase()
+  const match = dshSessions().find((session) => session.title.toLowerCase().includes(needle))
+  return match ? match.id : null
+}
 async function hubCall(config, method, params) {
   const endpointPath = path.join(path.dirname(config.cli), '.bridge', 'endpoint.json')
   const endpoint = JSON.parse(fs.readFileSync(endpointPath, 'utf8'))
@@ -106,7 +142,12 @@ export function apply(ctx, rawConfig) {
     if (!project) return []
     return (project.roles || [])
       .filter((item) => item.adapter === 'dsh')
-      .map((item) => shape(item.role, 'agents-chat-' + item.role, config.cwd || project.root))
+      .map((item) => {
+        // Prefer the user's own chat (CMS_Tester and friends). Creating a fresh
+        // agents-chat-<role> session would answer into a chat nobody watches.
+        const existing = sessionForRole(item.role)
+        return shape(item.role, existing || 'agents-chat-' + item.role, config.cwd || project.root)
+      })
   }
 
   async function refresh(force) {

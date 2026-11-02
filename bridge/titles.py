@@ -10,6 +10,7 @@ session simply falls back to the caller's default label.
 """
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from pathlib import Path
@@ -46,17 +47,34 @@ def qoder_title(session_id):
     return None
 
 
+def dsh_title(session_id):
+    """Title DSH shows for one session, from its project cache entry."""
+    if not session_id:
+        return None
+    cache = Path(os.environ.get("USERPROFILE") or Path.home()) / ".dsh/storages/session_projcache/sessions"
+    entry = cache / (str(session_id) + ".json")
+    if not entry.is_file():
+        return None
+    try:
+        data = json.loads(entry.read_text(encoding="utf-8"))
+        title = (((data.get("record") or {}).get("rows") or {}).get("title") or {}).get("val")
+    except (OSError, ValueError):
+        return None
+    return str(title).strip() if title else None
+
+
 def desktop_title(transport, session_id):
     """Human name for a desktop-bound session, when the client store has one."""
     if transport == "qoder_native":
         return qoder_title(session_id)
     if transport == "dsh_plugin" and session_id:
-        # A DSH session file carries no title, so its id is the only real name —
-        # better than repeating the role name in the status table.
-        return str(session_id)
+        # DSH keeps the chat title in its session cache; the session id is the
+        # fallback when that entry is missing.
+        return dsh_title(session_id) or str(session_id)
     return None
 
 
 def desktop_label(transport, session_id, fallback_role):
     """Preferred label: the real chat title, else '<role> · <client>'."""
     return desktop_title(transport, session_id) or "%s · %s" % (fallback_role, transport or "desktop")
+
