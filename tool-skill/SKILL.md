@@ -115,6 +115,15 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 
 不要迁移：`*_msg/*.json`、`_state/receipts/`、旧序号。
 
+## 谁对用户汇报（按项目定义，不要写死角色名）
+
+每个项目的角色名和权责由项目自己定：可能是 `leader`，也可能是 `master`、`CEO`、`owner`。**不要假设固定名字**。
+
+- 判断依据是角色描述：谁被定义成“对用户汇报 / 派活 / 最终验收”，汇总就归谁；
+- 你所在角色不是这个角色时，把结论按项目规则交给它，不要把长篇过程直接写给用户；
+- 用户只在他打开的聊天里看到消息，所以**不需要“静音”机制**，也不要替用户决定该看哪个聊天；
+- 只有真正需要用户拍板（缺信息、缺授权、两个方案要二选一）时，才在用户能看到的聊天里提一个问题。
+
 ## 总线读不了怎么办
 
 坏消息不再让全员停摆：读取时会跳过读不懂的文件，并记录问题。发现异常时：
@@ -177,4 +186,5 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 - [references/scheduling.md](references/scheduling.md)：定时与等待
 - [references/tester.md](references/tester.md)：验收角色做法
 - [scripts/agent_chat.py](scripts/agent_chat.py)：没有中枢时可直接运行的文件总线脚本
+
 
