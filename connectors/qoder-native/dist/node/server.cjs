@@ -27,11 +27,11 @@ function localClient(state) {
 }
 
 function resultPrompt(job) {
-  return job.prompt+"\nNATIVE RESULT REPORT: This transport cannot read your chat text. When this task is done, report a short result once using the local terminal:\n"+
-    '& "$env:LOCALAPPDATA\\Programs\\AgentsChat\\AgentsChat.Cli.exe" native-result '+job.task_id+' --receipt '+job.nonce+' --text "<your actual result, under 800 characters>"\n'+
-    "Replace the placeholder with your actual result. This writes only a task receipt in the tool's state directory; it does not create another task or model call. Then provide your normal final answer. If blocked, report the blocker rather than claiming completion. Do not send a separate reply task.";
+  // Keep this tail short: it is appended to every task and the role only needs
+  // the report command, not an essay about it.
+  return job.prompt+"\n\n汇报（只此一次，不要另发回复任务）：\n"+
+    '& "$env:LOCALAPPDATA\\Programs\\AgentsChat\\AgentsChat.Cli.exe" native-result '+job.task_id+' --receipt '+job.nonce+' --text "<结果，800字以内>"';
 }
-
 function createRunner(api,{state,call,readReport}={}) {
   const running=new Map();
   readReport??=async(job,signal)=>{

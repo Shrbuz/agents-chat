@@ -259,7 +259,9 @@ class AgentChatBridgeTests(unittest.TestCase):
                 payload = json.loads(row["payload"])
                 self.assertFalse(payload["notify"])
                 self.assertEqual(payload["kind"], "agent_chat_wakeup")
-                self.assertIn("实现登录 API", payload["prompt"])
+                # The wakeup points at the inbox; repeating the event text would
+                # only spend tokens, since the role reads the event from there.
+                self.assertNotIn("实现登录 API", payload["prompt"])
                 self.assertIn("inbox", payload["prompt"])
                 # The wakeup itself must not create an inbox result for the synthetic sender.
                 self.assertEqual(broker.store.inbox("agent-chat", "test")["messages"], [])
