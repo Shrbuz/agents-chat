@@ -4,20 +4,25 @@
 # 任务作为普通用户消息进入该会话，会话空闲后把最后一条 assistant/message
 # 通过总线协议回报（claim -> result）。
 #
+# 插件不写角色名。它按 adapter 自动发现：**某个角色的 adapter 是 dsh，
+# 就由这个插件接管**，会话名固定为 agents-chat-<角色>。所以以后新增
+# designer、或者别的项目里 frontend 也走 DSH，都不用改这里；插件每 60 秒
+# 重新读一次角色表。
+#
 # 用法（先独立 profile 验证，确认稳定再进 desktop）：
 #
 #   1. 复制本文件为 cordis.patch.yml，替换 <PLUGIN_PATH>、<CLI_PATH>、<PROJECT_ROOT>；
 #   2. 冷启动一个独立 Web 实例验证：
 #        dsh web --patch "<本文件绝对路径>"
-#   3. 验证通过后，把同样的 insert 条目追加到
+#   3. 验证通过后，把 insert 条目追加到
 #        %USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml（先备份），
 #      重启桌面版即可。
 #
-# 一个插件实例可以带多个角色：roles 里每一项对应一个角色和一个会话，
-# 不需要为每个角色各写一份 insert。
+# 一个插件实例服务一个项目，但覆盖该项目里所有 adapter=dsh 的角色；
+# 多项目就多写一条 insert，同样不需要列角色。
 #
-# 注意：这些角色由插件自己轮询总线，所以中枢那边不要再用 wake_roles
-# 把它们包进去，否则同一条任务会被执行两次。
+# 注意：这些角色由插件自己轮询总线，所以中枢那边的 agent_chat.wake_roles
+# 不要把它们包进去，否则同一条任务会被执行两次。
 
 - id: agent-default-model
   name: "@deepseek-ai/dsh-agent-default-model"
@@ -45,11 +50,7 @@
         cli: '<CLI_PATH>'
         project: 'wengan-cemetery'
         pollMs: 2000
+        discoverMs: 60000
         provider: 'qwen-token-plan-cn'
         model: 'deepseek-v4.1-flash'
         cwd: '<PROJECT_ROOT>'
-        roles:
-          - role: leader
-            sessionId: agents-chat-leader
-          - role: tester
-            sessionId: agents-chat-tester

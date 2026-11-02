@@ -2,9 +2,12 @@
  * agents-chat-dsh — a DeepSeek Harness host plugin that turns Agents Chat
  * tasks into real DSH sessions.
  *
- * One plugin instance serves any number of roles: each configured role gets its
- * own persistent session, so `leader`, `tester` and friends can all live in the
- * same host under a single `insert` entry.
+ * The plugin does not know role names. It asks the hub which roles exist and
+ * takes the ones whose adapter is `dsh`, so adding `designer`, or running
+ * `frontend` inside DSH on some other project, needs no plugin change. Each
+ * discovered role keeps its own persistent session (`agents-chat-<role>`), and
+ * the list is refreshed periodically so new roles are picked up without a
+ * restart.
  *
  * A task becomes an ordinary user turn on that role's session, so the
  * conversation appears in the desktop app like any other chat. When the session
@@ -25,6 +28,8 @@ const DEFAULTS = {
   cli: '',
   project: '',
   pollMs: 2000,
+  /** How often the role list is re-read from the hub. */
+  discoverMs: 60000,
   provider: 'qwen-token-plan-cn',
   model: 'deepseek-v4.1-flash',
   cwd: '',
@@ -55,30 +60,50 @@ function userMessage(text, id) {
   return { id, role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } }
 }
 
-/** Accept both a single role and a roles list; a role owns one session. */
-function normalizeRoles(config) {
-  const list = Array.isArray(config.roles) && config.roles.length
-    ? config.roles
-    : config.role
-      ? [{ role: config.role, sessionId: config.sessionId }]
-      : []
-  return list
-    .filter((item) => item && item.role)
-    .map((item) => ({
-      role: String(item.role),
-      sessionId: String(item.sessionId || 'agents-chat-' + item.role),
-      cwd: item.cwd || config.cwd || '',
-      busy: false,
-    }))
-}
-
 export function apply(ctx, rawConfig) {
   const config = { ...DEFAULTS, ...(rawConfig || {}) }
-  const roles = normalizeRoles(config)
+  /** Live role list; replaced whenever discovery runs. */
+  let roles = []
+  let lastDiscover = 0
 
-  if (!config.cli || !config.project || roles.length === 0) {
-    log('disabled: cli, project and at least one role are required')
+  if (!config.cli || !config.project) {
+    log('disabled: cli and project are required')
     return
+  }
+
+  function shape(role, sessionId, cwd, busy = false) {
+    return { role: String(role), sessionId: String(sessionId || 'agents-chat-' + role), cwd: cwd || '', busy }
+  }
+
+  /** Roles come from the hub unless the config pins an explicit list. */
+  async function discoverRoles() {
+    if (Array.isArray(config.roles) && config.roles.length) {
+      return config.roles.filter((item) => item && item.role)
+        .map((item) => shape(item.role, item.sessionId, item.cwd || config.cwd))
+    }
+    if (config.role) return [shape(config.role, config.sessionId, config.cwd)]
+    const info = await cli(config, ['roles'])
+    const project = (info.projects || []).find((item) => item.id === config.project)
+    if (!project) return []
+    return (project.roles || [])
+      .filter((item) => item.adapter === 'dsh')
+      .map((item) => shape(item.role, 'agents-chat-' + item.role, config.cwd || project.root))
+  }
+
+  async function refresh(force) {
+    const now = Date.now()
+    if (!force && now - lastDiscover < config.discoverMs) return
+    lastDiscover = now
+    try {
+      const next = await discoverRoles()
+      const busy = new Map(roles.map((item) => [item.role, item.busy]))
+      roles = next.map((item) => ({ ...item, busy: busy.get(item.role) || false }))
+      if (force || next.length !== busy.size) {
+        log('roles: ' + (roles.map((item) => item.role + '@' + item.sessionId).join(', ') || 'none (no role uses the dsh adapter)'))
+      }
+    } catch (error) {
+      log('role discovery failed: ' + (error?.message || error))
+    }
   }
 
   async function ensureAgent(target) {
@@ -171,6 +196,7 @@ export function apply(ctx, rawConfig) {
   }
 
   async function poll() {
+    await refresh(false)
     for (const target of roles) await pollRole(target)
   }
 
@@ -179,5 +205,5 @@ export function apply(ctx, rawConfig) {
     return () => clearInterval(timer)
   })
 
-  log('loaded: project=' + config.project + ' roles=' + roles.map((r) => r.role + '@' + r.sessionId).join(', '))
+  refresh(true)
 }
