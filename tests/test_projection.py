@@ -110,7 +110,8 @@ class BridgeProjectionTests(unittest.TestCase):
     def test_scan_advances_the_store_cursor_and_fills_the_projection(self):
         project = self.bridge.projects[0]
         self.bridge._prime_cursors()
-        self.assertEqual(self.store.bus_cursor("alpha"), "")
+        # Cursors are per role now, so one stuck role cannot block the others.
+        self.assertEqual(json.loads(self.store.bus_cursor("alpha")), {"backend": "", "frontend": ""})
 
         message_id = str(uuid.uuid4())
         event = {"schema_version": 1, "project_id": PROJECT_ID, "sequence": 1,
@@ -123,7 +124,7 @@ class BridgeProjectionTests(unittest.TestCase):
 
         self.bridge._scan(project)
 
-        self.assertEqual(self.store.bus_cursor("alpha"), f"00000001_{message_id}.json")
+        self.assertEqual(json.loads(self.store.bus_cursor("alpha"))["backend"], f"00000001_{message_id}.json")
         rows = self.store.bus_projection("alpha")
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["status"], "pending")
@@ -136,8 +137,9 @@ class BridgeProjectionTests(unittest.TestCase):
         # An event that cannot be replayed must not break the watcher.
         (self.bus_root / "backend_msg" / "00000001_broken.json").write_text("{not json", encoding="utf-8")
         self.bridge._scan(project)
-        self.assertEqual(self.store.bus_cursor("alpha"), "00000001_broken.json")
+        self.assertEqual(json.loads(self.store.bus_cursor("alpha"))["backend"], "00000001_broken.json")
 
 
 if __name__ == "__main__":
     unittest.main()
+

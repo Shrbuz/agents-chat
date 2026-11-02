@@ -108,16 +108,40 @@ class AgentChatBridge:
         return project + ":" + bus_role
 
     def _prime_cursors(self):
-        """Skip pre-existing history on first sight; the cursor lives in the store."""
+        """Skip pre-existing history on first sight; cursors live in the store."""
         for project in self.projects:
             if self.store.bus_cursor(project["id"]):
                 continue
-            latest = ""
-            for role in project["roles"].values():
-                for path in project["bus"].glob(role["directory"] + "/*.json"):
-                    if path.name > latest:
-                        latest = path.name
-            self.store.set_bus_cursor(project["id"], latest)
+            latest = {}
+            for bus_role, role in project["roles"].items():
+                names = [path.name for path in project["bus"].glob(role["directory"] + "/*.json")]
+                latest[bus_role] = max(names) if names else ""
+            self.store.set_bus_cursor(project["id"], json.dumps(latest, sort_keys=True))
+
+    def _cursors(self, project_id, bus_roles):
+        """Per-role cursors; an old single-string cursor seeds every role."""
+        raw = self.store.bus_cursor(project_id)
+        try:
+            stored = json.loads(raw) if raw else {}
+        except ValueError:
+            stored = {}
+        if not isinstance(stored, dict):
+            stored = {}
+        if raw and not stored:
+            # Legacy format: one filename for the whole project.
+            stored = {role: raw for role in bus_roles}
+        return {role: stored.get(role, "") for role in bus_roles}
+
+    def _set_cursor(self, project_id, bus_role, name):
+        raw = self.store.bus_cursor(project_id)
+        try:
+            stored = json.loads(raw) if raw else {}
+        except ValueError:
+            stored = {}
+        if not isinstance(stored, dict):
+            stored = {}
+        stored[bus_role] = name
+        self.store.set_bus_cursor(project_id, json.dumps(stored, sort_keys=True))
 
     def _loop(self):
         while not self.stop.wait(1.5):
@@ -130,8 +154,9 @@ class AgentChatBridge:
 
     def _scan(self, project):
         project_id = project["id"]
-        cursor = self.store.bus_cursor(project_id)
+        cursors = self._cursors(project_id, project["roles"].keys())
         for bus_role, role in project["roles"].items():
+            cursor = cursors[bus_role]
             directory = project["bus"] / role["directory"]
             for path in sorted(directory.glob("*.json")):
                 if path.name <= cursor:
@@ -139,23 +164,24 @@ class AgentChatBridge:
                 try:
                     event = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
-                    self.store.set_bus_cursor(project_id, path.name)
+                    self._set_cursor(project_id, bus_role, path.name)
                     cursor = path.name
                     continue
                 action = self._action(bus_role, event)
                 if action is False:
-                    self.store.set_bus_cursor(project_id, path.name)
+                    self._set_cursor(project_id, bus_role, path.name)
                     cursor = path.name
                     continue
                 if self.store.has_pending(role["address"]):
-                    # Keep the cursor so the event is retried after the current task.
-                    return
+                    # Only this role waits: the cursor for it stays put so the event
+                    # is retried, while other roles keep being woken.
+                    break
                 prompt = self._prompt(project, bus_role, role, path, event, action)
                 payload = {"prompt": prompt, "timeout": 180, "context": [], "reply_mode": "mailbox",
                            "queue_ttl": 3600, "notify": False, "kind": "agent_chat_wakeup"}
                 self.store.enqueue(WAKEUP_SENDER, role["address"], "agentchat:" + str(event.get("message_id") or path.name),
                                    payload)
-                self.store.set_bus_cursor(project_id, path.name)
+                self._set_cursor(project_id, bus_role, path.name)
                 cursor = path.name
                 self.notify()
         self._sync_projection(project)
