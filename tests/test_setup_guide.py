@@ -1,10 +1,17 @@
 """setup() must hand back the exact sentences and dispatch mode to use next."""
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 
 from bridge.onboarding import setup
+
+# A role needs a runnable command; using the fixture adapter keeps these tests
+# independent of whether the official Codex/Qoder CLIs are installed.
+FIXTURE = [sys.executable, "-c", "print(1)"]
+ROLES = [{"role": "backend", "adapter": "fixture", "command": FIXTURE},
+         {"role": "frontend", "adapter": "fixture", "command": FIXTURE}]
 
 
 class SetupGuideTests(unittest.TestCase):
@@ -18,7 +25,7 @@ class SetupGuideTests(unittest.TestCase):
 
     def run_setup(self, with_agent_chat=True):
         return setup(self.config, self.root / "proj", name="demo",
-                     roles=[{"role": "backend"}, {"role": "frontend"}],
+                     roles=[dict(spec) for spec in ROLES],
                      state=self.state, write_agents=False, with_agent_chat=with_agent_chat)
 
     def test_bus_mode_reports_phrases_for_each_role(self):
