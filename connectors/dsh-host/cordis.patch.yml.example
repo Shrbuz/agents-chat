@@ -1,28 +1,55 @@
 # Agents Chat ↔ DeepSeek Harness 宿主插件
 #
-# 把 Agents Chat 的任务变成 DSH 里的真实会话轮次：任务作为普通用户消息进入
-# 一个固定会话，会话空闲后把最后一条 assistant/message 通过总线协议回报。
+# 把 Agents Chat 的任务变成 DSH 里的真实会话轮次：每个角色一个固定会话，
+# 任务作为普通用户消息进入该会话，会话空闲后把最后一条 assistant/message
+# 通过总线协议回报（claim -> result）。
 #
 # 用法（先独立 profile 验证，确认稳定再进 desktop）：
 #
-#   1. 复制本文件为 cordis.patch.yml，把下面两处 <...> 换成真实绝对路径：
-#        - <PLUGIN_PATH>：本目录 index.js 的绝对路径，正斜杠
-#        - <CLI_PATH>   ：AgentsChat.Cli.exe 的绝对路径
+#   1. 复制本文件为 cordis.patch.yml，替换 <PLUGIN_PATH>、<CLI_PATH>、<PROJECT_ROOT>；
 #   2. 冷启动一个独立 Web 实例验证：
 #        dsh web --patch "<本文件绝对路径>"
-#      它会在另一个端口起 GUI，那个界面里出现的会话就是插件投递的。
 #   3. 验证通过后，把同样的 insert 条目追加到
-#        %USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml
-#      （先备份），重启桌面版即可。
+#        %USERPROFILE%\.dsh\profiles\desktop\cordis.patch.yml（先备份），
+#      重启桌面版即可。
 #
-# 回滚：删除该 insert 条目并重启；插件本身不写入任何用户数据。
+# 一个插件实例可以带多个角色：roles 里每一项对应一个角色和一个会话，
+# 不需要为每个角色各写一份 insert。
+#
+# 注意：这些角色由插件自己轮询总线，所以中枢那边不要再用 wake_roles
+# 把它们包进去，否则同一条任务会被执行两次。
 
+- id: agent-default-model
+  name: "@deepseek-ai/dsh-agent-default-model"
+  config:
+    provider: qwen-token-plan-cn
+    model: deepseek-v4.1-flash
+- id: llm-pi-ai
+  name: "@deepseek-ai/dsh-llm-pi-ai"
+  config:
+    providers:
+      qwen-token-plan-cn:
+        apiKeyEnv: QWEN_TOKEN_PLAN_CN_API_KEY
+        models:
+          - id: deepseek-v4.1-flash
+            name: DeepSeek V4.1 Flash
+            contextWindow: 1000000
+            maxTokens: 384000
+            input:
+              - text
+              - image
 - insert:
     - id: agents-chat-dsh
       name: '<PLUGIN_PATH>'
       config:
         cli: '<CLI_PATH>'
         project: 'wengan-cemetery'
-        role: 'leader'
-        sessionId: 'agents-chat-dsh'
         pollMs: 2000
+        provider: 'qwen-token-plan-cn'
+        model: 'deepseek-v4.1-flash'
+        cwd: '<PROJECT_ROOT>'
+        roles:
+          - role: leader
+            sessionId: agents-chat-leader
+          - role: tester
+            sessionId: agents-chat-tester

@@ -28,6 +28,19 @@ def _event_path(bus, role_directory, filename):
     return bus / role_directory / filename
 
 
+def _wake_roles(chat, resolved):
+    """Restrict hub wakeups to the roles that actually run through the hub.
+
+    A DSH host plugin polls the same bus by itself; if the hub also wakes that
+    role it would dispatch the same task twice. ``agent_chat.wake_roles`` names
+    the roles the hub owns, and everything else is left to other clients.
+    """
+    listed = chat.get("wake_roles")
+    if isinstance(listed, list) and listed:
+        return {name: role for name, role in resolved.items() if name in listed}
+    return resolved
+
+
 class AgentChatBridge:
     def __init__(self, state_dir, config, store, notify):
         self.state = Path(state_dir)
@@ -66,7 +79,8 @@ class AgentChatBridge:
                                       "local_role": local_role}
             prepared.append({"id": pid, "root": project["root"], "bus": bus,
                              "helper": _helper_for(project, project["root"]),
-                             "roles": resolved, "project_id": manifest.get("project_id", pid)})
+                             "roles": _wake_roles(chat, resolved),
+                             "project_id": manifest.get("project_id", pid)})
         return prepared
 
     def status(self):
