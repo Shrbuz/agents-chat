@@ -3,13 +3,16 @@
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## 0.6.5 有什么不同
+## 0.6.6 有什么不同
 
 - **DSH 聊天变成一等公民**：新增 `dsh_plugin` 桌面传输，任务投进你已经打开的 DSH 聊天，不再为每条任务新起进程；插件按 adapter 自动发现角色，自动绑定到你自己的那个聊天（如 `CMS_Tester`），中枢没跑时自己拉起。
 - **唤醒可靠**：每个角色独立游标，一个角色卡住不再让整个项目停止扫描；改绑聊天时过期唤醒自动作废，不再互相卡死。
 - **省 token**：总线唤醒只指路，不搬运任务正文（745 → 283 字符），Qoder 连接器的汇报尾巴 ~600 → ~120 字符。
 - **看得清**：托盘状态窗口改成带列头的表格，绑定列显示真实聊天名。
 - **不靠开机自启**：用到 Agents Chat 的会话自己拉起后台；项目以前用过、这次没提，Agent 会在做完主线后问一次要不要启动。
+- **一条坏消息不再拖垮全员**：写错的消息会被跳过并记录，不再让整个总线读不出来；`bus validate` 查、`bus repair --apply` 隔离。
+- **长任务不会白干**：租期过后，仍由原会话完成的活照收（标记为迟交）；桌面会话的租期由中枢自动续，不会中途被抢走。
+- **不再掐断正在干活的聊天**：唤醒超时只放弃等待，不打断会话；超时上限 30 分钟。
 
 ## 一行安装（Windows 10/11）
 
@@ -278,3 +281,4 @@ python build_portable.py
   `cordis.patch.yml` 指定 provider，并把密钥导出到环境变量，否则会以
   `MISSING_CREDENTIAL` 退出（中枢现在会把 stderr 最后一行带回给发起方）。
 - 这是**无人值守执行**：任务在后台跑完回传结果，不会注入你正在用的聊天窗口。
+
