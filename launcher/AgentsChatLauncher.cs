@@ -747,13 +747,13 @@ namespace AgentsChatLauncher
             list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
             list.HideSelection = false;
             list.Font = new Font("Segoe UI", 9F);
-            list.Columns.Add("项目", 150);
-            list.Columns.Add("角色", 110);
-            list.Columns.Add("适配器", 70);
-            list.Columns.Add("模式", 170);
-            list.Columns.Add("会话", 50);
-            list.Columns.Add("队列", 50);
-            list.Columns.Add("职责", 380);
+            list.Columns.Add("项目", 140);
+            list.Columns.Add("角色", 100);
+            list.Columns.Add("适配器", 66);
+            list.Columns.Add("模式", 150);
+            list.Columns.Add("绑定会话", 220);
+            list.Columns.Add("队列", 46);
+            list.Columns.Add("职责", 320);
             Controls.Add(list);
 
             Panel buttons = new Panel();
@@ -857,18 +857,11 @@ namespace AgentsChatLauncher
                     {
                         Dictionary<string, object> role = roleObject as Dictionary<string, object>;
                         if (role == null) continue;
-                        int sessions = 0;
-                        foreach (object session in TrayApp.Sequence(role.ContainsKey("sessions") ? role["sessions"] : null))
-                        {
-                            Dictionary<string, object> item = session as Dictionary<string, object>;
-                            if (item != null && Convert.ToBoolean(item.ContainsKey("online") ? item["online"] : false))
-                                sessions++;
-                        }
                         ListViewItem row = new ListViewItem(Convert.ToString(project["name"]));
                         row.SubItems.Add(Convert.ToString(role["role"]));
                         row.SubItems.Add(Convert.ToString(role["adapter"]));
                         row.SubItems.Add(Convert.ToString(role["mode"]));
-                        row.SubItems.Add(sessions.ToString());
+                        row.SubItems.Add(BindingText(role));
                         row.SubItems.Add(Convert.ToBoolean(role.ContainsKey("pending") ? role["pending"] : false) ? "有" : "无");
                         row.SubItems.Add(Convert.ToString(role["description"]));
                         list.Items.Add(row);
@@ -879,6 +872,30 @@ namespace AgentsChatLauncher
             {
                 list.EndUpdate();
             }
+        }
+
+        private static string ShortId(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "";
+            return value.Length <= 8 ? value : value.Substring(0, 8) + "…";
+        }
+
+        /** Which chat a role is bound to: its note when the client supplied one, plus a short id. */
+        private static string BindingText(Dictionary<string, object> role)
+        {
+            object sessionId = role.ContainsKey("session_id") ? role["session_id"] : null;
+            if (sessionId == null || Convert.ToString(sessionId).Length == 0) return "—";
+            string id = Convert.ToString(sessionId);
+            string label = null;
+            foreach (object session in TrayApp.Sequence(role.ContainsKey("sessions") ? role["sessions"] : null))
+            {
+                Dictionary<string, object> item = session as Dictionary<string, object>;
+                if (item == null) continue;
+                if (Convert.ToString(item.ContainsKey("id") ? item["id"] : null) != "desktop:" + id) continue;
+                string description = Convert.ToString(item.ContainsKey("description") ? item["description"] : null);
+                if (!string.IsNullOrWhiteSpace(description) && description != "桌面聊天绑定") label = description;
+            }
+            return (label == null ? "" : label + " · ") + ShortId(id);
         }
 
         private static string Pad(string value, int width)
