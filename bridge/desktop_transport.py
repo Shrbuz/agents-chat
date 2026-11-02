@@ -115,8 +115,21 @@ class DesktopHub:
 
     def bind(self, agent, binding):
         with self.cv:
+            target = (binding or {}).get("session_id")
+            # Jobs queued for the previous chat can never be delivered once the
+            # role moves. Close them explicitly instead of refusing to reattach:
+            # the sender learns the delivery was abandoned, and the deadlock that
+            # would otherwise keep a role stuck on an unused session is avoided.
+            for job in list(self.jobs.values()):
+                if job["agent"] != agent or job.get("session_id") == target:
+                    continue
+                if job["result"] is None:
+                    job["result"] = {"state": "cancelled",
+                                     "result": {"error": "desktop_rebind",
+                                                "summary": "角色已改绑到另一个会话，这条任务没有送达",
+                                                "delivery_uncertain": job["received"]}}
             if any(job["agent"] == agent for job in self.jobs.values()):
-                raise ValueError("desktop_has_inflight_task")
+                self.cv.notify_all()
             previous = self.bindings.get(agent)
             if binding is None:
                 self.bindings.pop(agent, None)

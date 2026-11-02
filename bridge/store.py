@@ -212,6 +212,31 @@ class Store:
             row = db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
             return {"removed": row.rowcount}
 
+    def cancel_wakeups(self, target):
+        """Drop advisory bus wakeups for a role that is being rebound.
+
+        A wakeup only says "check your bus inbox"; once the role points at another
+        chat the notification is stale, and letting it block the rebind would keep
+        the role attached to a session nobody is watching.
+        """
+        with self.db(True) as db:
+            rows = db.execute("SELECT id,payload FROM tasks WHERE target=? AND state IN ('queued','running')",
+                              (target,)).fetchall()
+            dropped = []
+            for row in rows:
+                try:
+                    kind = json.loads(row["payload"] or "{}").get("kind")
+                except ValueError:
+                    kind = None
+                if kind != "agent_chat_wakeup":
+                    continue
+                db.execute("UPDATE tasks SET state='cancelled', ended=?, result=? WHERE id=?",
+                           (time.time(), json.dumps({"error": "desktop_rebind",
+                                                     "summary": "角色已绑定到另一个会话，这条唤醒作废"}),
+                            row["id"]))
+                dropped.append(row["id"])
+            return dropped
+
     def prune_stale_role_sessions(self, project, role, keep, keep_alive=600):
         """Drop other sessions of a role that have gone quiet.
 

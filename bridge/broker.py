@@ -260,6 +260,10 @@ class Broker:
             unchanged = previous == wanted
             with self.cv:
                 if self.store.has_pending(internal) and not unchanged:
+                    # Wakeups are advisory: the role is moving to another chat, so
+                    # cancel those instead of refusing to reattach.
+                    self.store.cancel_wakeups(internal)
+                if self.store.has_pending(internal) and not unchanged:
                     raise ValueError("target_has_pending_tasks")
                 self.desktop.bind(internal, {"session_id": chat, "transport": transport} if chat else None)
             if previous and previous.get("session_id"):
