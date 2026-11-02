@@ -225,7 +225,15 @@ def run_task(task, endpoint, state_dir, cancelled, stop):
         if err is None:
             state = "succeeded" if process.returncode == 0 else "failed"
             if process.returncode != 0:
+                # A bare exit code tells the sender nothing; the last stderr line
+                # usually names the real cause (missing credential, bad config).
                 err = "runtime_exit_" + str(process.returncode)
+                log = run_dir / "stderr.log"
+                if log.exists():
+                    lines = [line.strip() for line in
+                             log.read_text(encoding="utf-8", errors="replace").splitlines() if line.strip()]
+                    if lines:
+                        err += ": " + lines[-1][:200]
     except (OSError, ValueError) as exc:
         err = "runtime_unavailable: " + str(exc)[:300]
     finally:

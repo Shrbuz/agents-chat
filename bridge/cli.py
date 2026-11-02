@@ -185,6 +185,11 @@ def join_role(state, config, project, role, session=None, transport=None):
             if not session:
                 raise ValueError("cannot_detect_qoder_chat: open the target chat and try again")
         else:
+            if adapter == "dsh":
+                raise ValueError(
+                    "dsh roles are served by the DSH host plugin; do not join them. "
+                    "Tasks reach a dsh role through the project agent_chat bus and show up "
+                    "as the agents-chat-<role> session once the plugin is loaded")
             raise ValueError("desktop_bind_unsupported_adapter: " + adapter)
     result = Client(state).call("desktop_bind", agent=internal, project=project,
                                 session_id=session, transport=transport)

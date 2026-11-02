@@ -242,7 +242,9 @@ class Broker:
             transport = p.get("transport")
             valid = {"codex": {"codex_app_tools"},
                      "qoder": {"qoder_accessibility", "qoder_extension", "qoder_native"},
-                     "fixture": {"codex_app_tools", "qoder_accessibility", "qoder_extension", "qoder_native"}}
+                     "dsh": {"dsh_plugin"},
+                     "fixture": {"codex_app_tools", "qoder_accessibility", "qoder_extension",
+                                 "qoder_native", "dsh_plugin"}}
             if chat is not None and transport not in valid.get(endpoint["adapter"], set()):
                 raise ValueError("unsupported_desktop_transport")
             # Binding a role changes routing, so never redirect already accepted work.

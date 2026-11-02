@@ -18,6 +18,8 @@
  */
 
 import { execFile } from 'node:child_process'
+import fs from 'node:fs'
+import path from 'node:path'
 
 export const name = 'agents-chat-dsh'
 
@@ -60,6 +62,23 @@ function userMessage(text, id) {
   return { id, role: 'user', content: [{ type: 'text', text }], source: { kind: 'user' } }
 }
 
+/**
+ * Talk to the hub over its local HTTP API, the same one the Qoder and Codex
+ * connectors use. The endpoint file carries both the URL and the bearer token.
+ */
+async function hubCall(config, method, params) {
+  const endpointPath = path.join(path.dirname(config.cli), '.bridge', 'endpoint.json')
+  const endpoint = JSON.parse(fs.readFileSync(endpointPath, 'utf8'))
+  const response = await fetch(endpoint.url + '/call', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + endpoint.token },
+    body: JSON.stringify({ method, params }),
+  })
+  const payload = await response.json().catch(() => ({}))
+  if (!response.ok) throw new Error(payload.error || 'HTTP ' + response.status)
+  return payload.result
+}
+
 export function apply(ctx, rawConfig) {
   const config = { ...DEFAULTS, ...(rawConfig || {}) }
   /** Live role list; replaced whenever discovery runs. */
@@ -98,6 +117,11 @@ export function apply(ctx, rawConfig) {
       const next = await discoverRoles()
       const busy = new Map(roles.map((item) => [item.role, item.busy]))
       roles = next.map((item) => ({ ...item, busy: busy.get(item.role) || false }))
+      for (const target of roles) {
+        if (target.bound) continue
+        target.bound = true
+        bindRole(target)
+      }
       if (force || next.length !== busy.size) {
         log('roles: ' + (roles.map((item) => item.role + '@' + item.sessionId).join(', ') || 'none (no role uses the dsh adapter)'))
       }
@@ -143,6 +167,52 @@ export function apply(ctx, rawConfig) {
     return undefined
   }
 
+  /** Bind the role to the hub as a desktop transport, so send() targets this session. */
+  async function bindRole(target) {
+    try {
+      await hubCall(config, 'desktop_bind', {
+        agent: config.project + '.' + target.role,
+        project: config.project,
+        session_id: target.sessionId,
+        transport: 'dsh_plugin',
+      })
+      log('bound ' + target.role + ' as dsh_plugin (' + target.sessionId + ')')
+    } catch (error) {
+      log('bind ' + target.role + ' failed: ' + (error?.message || error))
+      target.bound = false
+    }
+  }
+
+  /** Take one desktop job for this role and answer it inside its session. */
+  async function serveDesktop(target) {
+    if (target.serving || !target.bound) return
+    target.serving = true
+    try {
+      const job = await hubCall(config, 'desktop_receive', {
+        agent: config.project + '.' + target.role,
+        project: config.project,
+        session_id: target.sessionId,
+        seconds: 10,
+      })
+      if (!job) return
+      const agent = await ensureAgent(target)
+      agent.followup(userMessage(job.prompt, job.task_id))
+      await agent.whenIdle()
+      const answer = lastAssistantText(target.sessionId)
+      await hubCall(config, 'desktop_finish', {
+        task_id: job.task_id,
+        nonce: job.nonce,
+        state: answer ? 'succeeded' : 'failed',
+        result: { summary: answer || 'DSH 会话没有产生助手消息' },
+      })
+      log(target.role + ' delivered desktop task ' + job.task_id + (answer ? ' (answered)' : ' (no message)'))
+    } catch (error) {
+      log(target.role + ' desktop receive failed: ' + (error?.message || error))
+    } finally {
+      target.serving = false
+    }
+  }
+
   async function markRead(target, messageId) {
     await cli(config, ['bus', 'mark-read', '--role', target.role, '--session', target.sessionId, messageId])
       .catch((error) => log('mark-read failed: ' + (error?.message || error)))
@@ -160,7 +230,12 @@ export function apply(ctx, rawConfig) {
         (acceptance ? '\n\n验收条件：\n' + acceptance : '')
       agent.followup(userMessage(prompt, message.message_id))
       await agent.whenIdle()
-      const answer = lastAssistantText(target.sessionId) || '(没有产生助手消息)'
+      const answer = lastAssistantText(target.sessionId)
+      if (!answer) {
+        // A task with no assistant text is not a success: reporting a placeholder
+        // as a resolved result hides the failure from whoever asked.
+        throw new Error('DSH 会话没有产生助手消息（可能未配置模型或被中断）')
+      }
       await cli(config, ['bus', 'result', message.task_id, '--role', target.role, '--session', target.sessionId,
         '--token', claim.claim_token, '--body', answer.slice(0, 800), '--evidence', 'dsh session ' + target.sessionId])
       log(target.role + ' answered ' + message.task_id + ' (' + answer.length + ' chars)')
@@ -205,5 +280,15 @@ export function apply(ctx, rawConfig) {
     return () => clearInterval(timer)
   })
 
+  // Desktop jobs arrive one at a time per role; the receive call long-polls,
+  // so a one second tick only starts a wait that is usually still pending.
+  ctx.effect(() => {
+    const timer = setInterval(() => {
+      for (const target of roles) serveDesktop(target)
+    }, 1000)
+    return () => clearInterval(timer)
+  })
+
   refresh(true)
 }
+
