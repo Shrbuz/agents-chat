@@ -131,6 +131,48 @@ class BridgeProjectionTests(unittest.TestCase):
         # The wake cursor is store state now; no side-car JSON file is written.
         self.assertFalse((self.state / "agent-chat-cursors.json").exists())
 
+    def test_lease_is_renewed_for_a_live_desktop_session(self):
+        from datetime import timedelta
+        from bridge.bus import Bus, parse_time, stamp, utc_now
+
+        bus = Bus(self.bus_root)
+        task_id = bus.submit("request", "frontend", "fe-1", recipient="backend",
+                             data={"title": "t", "body": "b", "acceptance": ["a"]})["task"]["task_id"]
+        bus.submit("claim", "backend", "be-1", task_id=task_id)
+        # Age the claim so less than half the lease is left.
+        for path in sorted(self.bus_root.glob("*_msg/*.json")):
+            event = json.loads(path.read_text(encoding="utf-8"))
+            if event["type"] == "claim":
+                event["data"]["expires_at"] = stamp(utc_now() + timedelta(seconds=5))
+                path.write_text(json.dumps(event, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        # A desktop session for this role is heartbeating right now.
+        self.store.register_session("desktop:chat-1", "alpha", "backend", "fixture", "codex_app_tools")
+
+        self.bridge._renew_leases(self.bridge.projects[0])
+
+        events, tasks = bus.load()
+        self.assertEqual(events[-1]["type"], "renew")
+        self.assertGreater(parse_time(tasks[task_id]["claim"]["expires_at"]),
+                           parse_time(events[-2]["data"]["expires_at"]))
+
+    def test_lease_is_not_renewed_without_a_live_desktop_session(self):
+        from datetime import timedelta
+        from bridge.bus import Bus, stamp, utc_now
+
+        bus = Bus(self.bus_root)
+        task_id = bus.submit("request", "frontend", "fe-1", recipient="backend",
+                             data={"title": "t", "body": "b", "acceptance": ["a"]})["task"]["task_id"]
+        bus.submit("claim", "backend", "be-1", task_id=task_id)
+        for path in sorted(self.bus_root.glob("*_msg/*.json")):
+            event = json.loads(path.read_text(encoding="utf-8"))
+            if event["type"] == "claim":
+                event["data"]["expires_at"] = stamp(utc_now() + timedelta(seconds=5))
+                path.write_text(json.dumps(event, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+        self.bridge._renew_leases(self.bridge.projects[0])
+
+        events, tasks = bus.load()
+        self.assertNotEqual(events[-1]["type"], "renew")
     def test_scan_survives_a_damaged_bus(self):
         project = self.bridge.projects[0]
         self.bridge._prime_cursors()
@@ -142,4 +184,6 @@ class BridgeProjectionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
 

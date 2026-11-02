@@ -9,7 +9,7 @@ from pathlib import Path
 import threading
 import time
 
-from .bus import Bus
+from .bus import Bus, parse_time, utc_now
 
 DELIVER = {"request", "result", "blocked", "cancel"}
 WAKEUP_SENDER = "agent-chat"
@@ -144,13 +144,53 @@ class AgentChatBridge:
         self.store.set_bus_cursor(project_id, json.dumps(stored, sort_keys=True))
 
     def _loop(self):
+        ticks = 0
         while not self.stop.wait(1.5):
+            ticks += 1
             for project in self.projects:
                 try:
                     self._scan(project)
                 except Exception:
                     # A malformed or concurrently rewritten event must not kill the watcher.
                     continue
+                if ticks % 40 == 0:
+                    try:
+                        self._renew_leases(project)
+                    except Exception:
+                        continue
+
+    def _renew_leases(self, project):
+        """Keep a desktop session's claim alive while that session is still there.
+
+        Only roles the hub actually delivers to are touched: their session heartbeats,
+        so the hub knows the agent is present rather than crashed. A role driven by a
+        bare CLI has no such signal, and renewing it blindly would turn the lease back
+        into a deadlock.
+        """
+        bus = Bus(project["bus"])
+        _, tasks = bus.load()
+        now = utc_now()
+        for task in tasks.values():
+            claim = task.get("claim")
+            if not claim or task["status"] not in ("in_progress", "blocked"):
+                continue
+            role = project["roles"].get(task["assignee"])
+            if not role or not self._desktop_session_online(project, role):
+                continue
+            lease = claim.get("lease_seconds") or 1800
+            remaining = (parse_time(claim["expires_at"]) - now).total_seconds()
+            if remaining > lease / 2:
+                continue
+            try:
+                bus.submit("renew", task["assignee"], claim["session"],
+                           task_id=task["task_id"], token=claim["token"])
+            except ValueError:
+                # Someone else took over, or the task moved on: nothing to keep alive.
+                continue
+
+    def _desktop_session_online(self, project, role):
+        sessions = self.store.list_sessions(project=project["id"], role=role["local_role"])
+        return any(item["id"].startswith("desktop:") and item["online"] for item in sessions)
 
     def _scan(self, project):
         project_id = project["id"]
@@ -225,3 +265,4 @@ class AgentChatBridge:
             "用项目内的 agent-chat helper 执行 inbox/claim/result/verify"
         return (f"收到一条 Agents Chat 唤醒（{action}），去收件箱领取。\n"
                 f"python \"{helper}\" --project \"{project['root']}\" inbox --role {bus_role} --session <你的会话ID>")
+
