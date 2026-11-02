@@ -10,3 +10,4 @@
 *.exe binary
 *.png binary
 *.zip binary
+*.sh text eol=lf
