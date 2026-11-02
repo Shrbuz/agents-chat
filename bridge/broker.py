@@ -76,9 +76,12 @@ class Broker:
             if not (endpoint and binding.get("session_id")):
                 continue
             try:
+                # The transports expose no chat title, so the default session label
+                # is what the hub can prove: which role, through which client.
+                label = "%s · %s" % (endpoint["role"], binding.get("transport", "desktop"))
                 self.store.register_session("desktop:" + binding["session_id"], endpoint["project"],
                                             endpoint["role"], endpoint["adapter"],
-                                            binding.get("transport", "desktop"), "桌面聊天绑定")
+                                            binding.get("transport", "desktop"), label)
             except ValueError:
                 # Two roles pointing at one chat is a configuration mistake, not a
                 # reason to refuse to start. Keep the first binding and drop this
