@@ -17,13 +17,15 @@ CMD 里等价的一行：
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/Shrbuz/agents-chat/releases/latest/download/install.ps1 | iex"
 ```
 
-安装器会下载自包含的便携包，安装到 `%LOCALAPPDATA%\Programs\AgentsChat`，并把两个用户级技能装到
-Codex、Qoder、DSH 的技能目录：
+安装器会下载自包含的便携包，安装到 `%LOCALAPPDATA%\Programs\AgentsChat`，并把一个用户级技能装到
+Codex、Qoder、DSH 的技能目录（其他客户端把 `tool-skill/` 整个复制到其技能根目录即可）：
 
-- `agents-chat-desktop`：项目/角色/会话、`setup`、`send`、`join`、桌面唤醒；
-- `agent-chat`：文件总线、claim/租约、result/verify 和完整消息历史。
+- `agents-chat-desktop`：项目/角色/会话、`setup`、`send`、`join`、桌面唤醒，以及文件总线的
+  `bus` 子命令；`references/` 里带完整的协议、交接和命令说明，`scripts/agent_chat.py` 是
+  没有中枢时可直接运行的文件总线客户端。
 
-`setup` 默认会为新项目初始化 `agent_chat` 总线（`--no-agent-chat` 可关闭），所以安装后的一句话说配置即可同时得到两套能力。
+一个技能同时覆盖两种模式：项目已有 `agent_chat` 总线时用它派活、中枢只负责唤醒；没有总线时
+由中枢队列派活。同一条请求只走一条链路，不存在需要用户裁决的“两套系统”。
 安装器创建开始菜单/桌面入口并启动托盘，不需要管理员权限，不需要预装 Python、pip、Node（Codex/Qoder 自身仍由你安装）。
 
 装好后，在一个**新开的项目聊天**里说：
@@ -33,7 +35,7 @@ Codex、Qoder、DSH 的技能目录：
 Agent 会完成或指导完成项目、角色、项目入口、MCP 配置和桌面聊天绑定。安装器会打印这句话。
 已有聊天可能缓存旧技能，需要新开一个会话才会加载最新版本。当前安装器写入 Codex、Qoder、DSH 三个用户级技能目录；其他客户端可把 `tool-skill/SKILL.md` 和 `tool-skill/agent-chat/` 放到其技能根目录。
 
-配套的 `agent-chat` 技能靠一个 Python 脚本执行，而安装本身不需要 Python。安装器会挑一个可用的解释器（便携包自带的 Python 优先，其次系统 `python`，再次 `py` 启动器），把路径写进技能目录的 `runtime.json`；技能会优先读这个文件。三者都没有时安装日志会明确警告“技能已复制但不可执行”，不会静默通过。已存在的 `agent-chat` 目录不会被覆盖。
+技能里的 `scripts/agent_chat.py` 需要 Python，而安装本身不需要。安装器会挑一个可用的解释器（便携包自带的 Python 优先，其次系统 `python`，再次 `py` 启动器），把路径写进技能目录的 `runtime.json`；技能会优先读这个文件。三者都没有时安装日志会明确警告“脚本已复制但不可执行”，不会静默通过。
 
 安装器会校验 Release 的 SHA-256，保留已有的 `config.json`/`data`，不需要管理员权限。如果检测到 Qoder，安装器会写入它的路径并创建 `Qoder (Agents Chat)` 快捷方式；Qoder 必须从这个快捷方式启动才能加载原生扩展。未自动检测到时用：
 
@@ -177,7 +179,7 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 - `beta.tester` 是另一个 Codex 会话，只做验收；
 - `alpha.frontend` 是 Qoder。
 
-这些角色互相看不到对方的历史，只看到派发的短任务和结果摘要，因此不会把彼此的上下文混在一起。需要更复杂的领取/租约/验收语义时，项目可以同时使用用户自己的 `agent-chat` skill：Agents Chat 负责在文件总线出现新 request/result 时唤醒对应角色会话，claim/result/verify 仍以该 skill 为准。
+这些角色互相看不到对方的历史，只看到派发的短任务和结果摘要，因此不会把彼此的上下文混在一起。需要领取/租约/验收语义时，用技能里的 `bus` 子命令（中枢原生实现同一协议）；总线出现新 request/result 时中枢会唤醒对应角色会话。
 
 ## 桌面聊天绑定（可选）
 

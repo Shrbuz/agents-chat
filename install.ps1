@@ -171,7 +171,8 @@ function Install-Skill([string]$Root) {
         Write-Warning "USERPROFILE is not set; skill installation skipped"
         return
     }
-    $legacySource = Join-Path $Root "tool-skill\agent-chat"
+    $references = Join-Path $Root "tool-skill\references"
+    $scripts = Join-Path $Root "tool-skill\scripts"
     $interpreter = Resolve-SkillInterpreter $Root
     $roots = @(
         (Join-Path $env:USERPROFILE ".codex\skills"),
@@ -182,41 +183,37 @@ function Install-Skill([string]$Root) {
         $target = Join-Path $skills $SkillName
         New-Item -ItemType Directory -Force -Path $target | Out-Null
         Copy-Item -Path $source -Destination (Join-Path $target "SKILL.md") -Force
-        # Include the file-bus/claim/verify protocol as a companion skill.
-        # Keep a user-managed copy or junction untouched.
-        $legacy = Join-Path $skills "agent-chat"
-        $fresh = $false
-        if ((Test-Path $legacySource) -and -not (Test-Path $legacy)) {
-            Copy-Item -Path $legacySource -Destination $legacy -Recurse -Force
-            $fresh = $true
+        # One skill carries the protocol docs and the standalone helper, so a
+        # second "agent-chat" skill is no longer installed alongside it.
+        if (Test-Path $references) {
+            Copy-Item -Path $references -Destination $target -Recurse -Force
         }
-        if (Test-Path $legacy) {
-            $entry = Get-Item -LiteralPath $legacy -Force
-            if ($entry.LinkType -ne 'Junction') {
-                $runtimePath = Join-Path $legacy "runtime.json"
-                if ($fresh -or -not (Test-Path $runtimePath)) {
-                    if ($interpreter) {
-                        [pscustomobject]@{
-                            python = $interpreter.python
-                            source = $interpreter.source
-                            written = (Get-Date).ToString("s")
-                        } | ConvertTo-Json -Compress | Set-Content -Path $runtimePath -Encoding utf8
-                    } else {
-                        [pscustomobject]@{
-                            python = $null
-                            source = "missing"
-                            note = "no Python interpreter found; the companion skill was copied but cannot run"
-                        } | ConvertTo-Json -Compress | Set-Content -Path $runtimePath -Encoding utf8
-                    }
-                }
-            }
+        if (Test-Path $scripts) {
+            Copy-Item -Path $scripts -Destination $target -Recurse -Force
+        }
+        $runtimePath = Join-Path $target "runtime.json"
+        if ($interpreter) {
+            [pscustomobject]@{
+                python = $interpreter.python
+                source = $interpreter.source
+                written = (Get-Date).ToString("s")
+            } | ConvertTo-Json -Compress | Set-Content -Path $runtimePath -Encoding utf8
+        } else {
+            [pscustomobject]@{
+                python = $null
+                source = "missing"
+                note = "no Python interpreter found; the standalone helper is copied but cannot run"
+            } | ConvertTo-Json -Compress | Set-Content -Path $runtimePath -Encoding utf8
         }
     }
-    Write-Host ("    skills installed for Codex/Qoder/DSH (agents-chat-desktop + agent-chat)")
+    Write-Host ("    skill installed for Codex/Qoder/DSH (agents-chat-desktop)")
     if ($interpreter) {
-        Write-Host ("    companion skill interpreter: " + $interpreter.source)
+        Write-Host ("    standalone helper interpreter: " + $interpreter.source)
     } else {
-        Write-Warning "no Python interpreter found: the agent-chat companion skill is copied but not runnable."
+        Write-Warning "no Python interpreter found: the standalone helper is copied but not runnable."
+    }
+    if (Test-Path (Join-Path $env:USERPROFILE ".agents\skills\agent-chat")) {
+        Write-Host "    note: a legacy agent-chat skill is present; the merged skill takes precedence"
     }
 }
 

@@ -2,6 +2,19 @@
 
 本文件只记录可公开复现的检查。真实桌面聊天 ID、任务 ID、业务项目路径和本机截图不进入开源仓库。
 
+## 0.6.1 单一技能入口
+
+此前安装器会往每个客户端技能目录装两份技能（`agents-chat-desktop` 和 `agent-chat`），它们的名字和职责重叠。实测中有 Agent 读到“同一个请求只能由一条链路派发”后停下来，要求用户在两条链路之间裁决——这是入口设计问题，不是能力问题。
+
+| 检查 | 结果 |
+|---|---|
+| 合并 | `tool-skill/SKILL.md` 同时描述中枢模式与总线模式，`references/` 与 `scripts/agent_chat.py` 随同一技能下发 |
+| 选择规则 | 技能内写明：项目已有 `agent_chat/project.json` 走总线派活、中枢只唤醒；没有则走中枢队列；同一条请求只走一条链路 |
+| 不再装第二份 | 安装器只创建 `agents-chat-desktop`，新增 `references/`、`scripts/`、`runtime.json`；已存在的旧 `agent-chat` 目录保持原样，由合并技能声明优先级 |
+| 假环境实测 | 覆盖 `USERPROFILE` 后安装 0.6.0 便携包：技能目录含 1 个 `SKILL.md`、8 份 `references`、`scripts/agent_chat.py`、`runtime.json`（`source: bundled`），未创建旧 `agent-chat` |
+| 真机部署 | 三个技能目录同步为合并版（各 11 个文件），旧的 `agent-chat` 目录未改动 |
+| 回归 | 69 项 Python 测试通过；`install.ps1` AST 解析无错误 |
+
 ## 0.6.0 文件总线协议原生并入
 
 此前中枢只监视 skill 的文件总线并据此创建唤醒任务，`claim`/租约/`result`/`verify` 仍在外部脚本里，任务状态存在两处。本版把协议实现进 `bridge`，总线文件仍是唯一真源。

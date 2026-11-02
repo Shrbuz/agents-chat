@@ -138,12 +138,13 @@ def main():
         skill_path = skill_root / "agents-chat-desktop"
         skill_path.mkdir(parents=True,exist_ok=True)
         shutil.copy2(ROOT / "tool-skill/SKILL.md",skill_path / "SKILL.md")
-        # The full claim/lease/verify file-bus protocol is bundled as a
-        # companion skill.  Never overwrite a user-managed copy or junction.
-        legacy = skill_root / "agent-chat"
-        bundled = ROOT / "tool-skill/agent-chat"
-        if bundled.is_dir() and not legacy.exists():
-            shutil.copytree(bundled, legacy, ignore=shutil.ignore_patterns("__pycache__"))
+        # One skill carries both the hub workflow and the standalone file-bus
+        # protocol, so no second "agent-chat" skill is installed beside it.
+        for folder in ("references", "scripts"):
+            source = ROOT / "tool-skill" / folder
+            if source.is_dir():
+                shutil.copytree(source, skill_path / folder, dirs_exist_ok=True,
+                                ignore=shutil.ignore_patterns("__pycache__"))
     if not existing:
         shutil.copytree(ROOT / "examples", destination / "examples", dirs_exist_ok=True)
         for endpoint in config["endpoints"].values():
