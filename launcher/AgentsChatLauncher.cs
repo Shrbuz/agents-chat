@@ -889,7 +889,7 @@ namespace AgentsChatLauncher
             // The hub resolves the real chat title from the client's own store when
             // it can; that is the name the user recognises.
             string title = Convert.ToString(role.ContainsKey("session_title") ? role["session_title"] : null);
-            if (!string.IsNullOrWhiteSpace(title)) return title + " · " + ShortId(id);
+            if (!string.IsNullOrWhiteSpace(title)) return title == id ? id : title + " · " + ShortId(id);
             string label = null;
             foreach (object session in TrayApp.Sequence(role.ContainsKey("sessions") ? role["sessions"] : null))
             {

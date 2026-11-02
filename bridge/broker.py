@@ -254,8 +254,12 @@ class Broker:
                 raise ValueError("unsupported_desktop_transport")
             # Binding a role changes routing, so never redirect already accepted work.
             previous = self.desktop.bindings.get(internal)
+            wanted = {"session_id": chat, "transport": transport} if chat else None
+            # Re-binding the same session is not a redirect; a plugin that restarts
+            # while tasks are queued must still be able to reattach.
+            unchanged = previous == wanted
             with self.cv:
-                if self.store.has_pending(internal):
+                if self.store.has_pending(internal) and not unchanged:
                     raise ValueError("target_has_pending_tasks")
                 self.desktop.bind(internal, {"session_id": chat, "transport": transport} if chat else None)
             if previous and previous.get("session_id"):

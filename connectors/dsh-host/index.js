@@ -178,7 +178,14 @@ export function apply(ctx, rawConfig) {
       })
       log('bound ' + target.role + ' as dsh_plugin (' + target.sessionId + ')')
     } catch (error) {
-      log('bind ' + target.role + ' failed: ' + (error?.message || error))
+      const message = String(error?.message || error)
+      // Routing already points at this session; only a rebind was refused because
+      // queued work would be redirected. Keep serving so the queue drains.
+      if (message.includes('target_has_pending_tasks')) {
+        log('bound ' + target.role + ' (already routed; draining queued tasks)')
+        return
+      }
+      log('bind ' + target.role + ' failed: ' + message)
       target.bound = false
     }
   }
