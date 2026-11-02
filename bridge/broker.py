@@ -3,6 +3,7 @@ import json
 import math
 import os
 import re
+import sys
 import secrets
 import threading
 import time
@@ -70,12 +71,25 @@ class Broker:
         self.store.purge_stale_sessions()
         # A persisted desktop binding is a real session even before its connector
         # sends the first heartbeat.
-        for name, binding in self.desktop.bindings.items():
+        for name, binding in list(self.desktop.bindings.items()):
             endpoint = self.endpoints.get(name)
-            if endpoint and binding.get("session_id"):
+            if not (endpoint and binding.get("session_id")):
+                continue
+            try:
                 self.store.register_session("desktop:" + binding["session_id"], endpoint["project"],
                                             endpoint["role"], endpoint["adapter"],
                                             binding.get("transport", "desktop"), "桌面聊天绑定")
+            except ValueError:
+                # Two roles pointing at one chat is a configuration mistake, not a
+                # reason to refuse to start. Keep the first binding and drop this
+                # one so the hub can still serve every other role.
+                sys.stderr.write("agents-chat: dropping duplicate binding for " + name
+                                 + " (chat already owned by another role)\n")
+                sys.stderr.flush()
+                try:
+                    self.desktop.bind(name, None)
+                except ValueError:
+                    self.desktop.bindings.pop(name, None)
 
     def start(self):
         for name, endpoint in self.endpoints.items():
@@ -472,3 +486,4 @@ def serve(state_dir, config_path):
                     time.sleep(.05)
         finally:
             broker.lock.close()
+
