@@ -84,6 +84,10 @@ class Broker:
                 self.store.register_session("desktop:" + binding["session_id"], endpoint["project"],
                                             endpoint["role"], endpoint["adapter"],
                                             binding.get("transport", "desktop"), label)
+                # Drop half-dead sessions registered by hand earlier, so the role
+                # list shows the chat that actually serves it.
+                self.store.prune_stale_role_sessions(endpoint["project"], endpoint["role"],
+                                                     "desktop:" + binding["session_id"])
             except ValueError:
                 # Two roles pointing at one chat is a configuration mistake, not a
                 # reason to refuse to start. Keep the first binding and drop this
@@ -200,7 +204,8 @@ class Broker:
                     "states": self.store.stats(), "projects": len(self.config["projects"]),
                     "roles": len(self.endpoints), "recovered": self.recovered,
                     "agent_chat": self.agent_chat.status(),
-                    "workers_alive": sum(w.is_alive() for w in self.workers)}
+                    "workers_alive": sum(w.is_alive() for w in self.workers),
+                    "failed_tasks": self.store.recent_failures(5)}
         if method == "status":
             return {"health": self.call("health", {}), "roles": self.call("roles", {})}
         if method in ("roles", "projects", "role_list"):

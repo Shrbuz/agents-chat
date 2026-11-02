@@ -212,6 +212,35 @@ class Store:
             row = db.execute("DELETE FROM sessions WHERE id=?", (session_id,))
             return {"removed": row.rowcount}
 
+    def prune_stale_role_sessions(self, project, role, keep, keep_alive=600):
+        """Drop other sessions of a role that have gone quiet.
+
+        A role bound to a desktop chat should not keep showing half-dead sessions
+        registered by hand earlier: they never heartbeat and make the list lie.
+        """
+        cutoff = time.time() - keep_alive
+        with self.db(True) as db:
+            rows = db.execute("SELECT id FROM sessions WHERE project=? AND role=? AND id<>? AND last_seen<?",
+                              (project, role, keep, cutoff)).fetchall()
+            for row in rows:
+                db.execute("DELETE FROM sessions WHERE id=?", (row[0],))
+            return [row[0] for row in rows]
+
+    def recent_failures(self, limit=5):
+        """Most recent failed tasks with their reason, for health output."""
+        with self.db() as db:
+            rows = db.execute("SELECT id,target,result FROM tasks WHERE state='failed'"
+                              " ORDER BY created DESC LIMIT ?", (int(limit),)).fetchall()
+        failures = []
+        for row in rows:
+            try:
+                result = json.loads(row["result"] or "{}")
+            except ValueError:
+                result = {}
+            failures.append({"task_id": row["id"], "target": row["target"],
+                             "error": result.get("error") or result.get("summary") or "unknown"})
+        return failures
+
     def list_sessions(self, project=None, role=None, include_offline=True):
         query = "SELECT * FROM sessions"
         clauses, values = [], []
