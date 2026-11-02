@@ -761,6 +761,12 @@ namespace AgentsChatLauncher
             buttons.Height = 92;
             Controls.Add(buttons);
 
+            // Docking is applied from the highest z-order down, so the Fill list
+            // must sit at the bottom of the z-order to receive only the space the
+            // Top summary and Bottom buttons leave behind. Otherwise the list is
+            // drawn under the summary and its column header is clipped.
+            Controls.SetChildIndex(list, 0);
+
             Button toggle = new Button();
             toggle.Text = "启动 / 停止后台";
             toggle.Width = 140;
