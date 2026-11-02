@@ -128,6 +128,11 @@ def main():
     for filename in ("QoderDesktop.exe","QoderDesktop.cs"):
         shutil.copy2(ROOT / "connectors" / filename,destination / "connectors" / filename)
     shutil.copytree(ROOT/"connectors/qoder-native",destination/"connectors/qoder-native",dirs_exist_ok=True)
+    # The DSH host plugin is what lets a DSH chat receive tasks without spawning a
+    # process per task; without it an install is missing half of the DSH story.
+    if (ROOT/"connectors/dsh-host").is_dir():
+        shutil.copytree(ROOT/"connectors/dsh-host",destination/"connectors/dsh-host",
+                        dirs_exist_ok=True, ignore=shutil.ignore_patterns("cordis.patch.yml","__pycache__"))
     native_bridge = destination/"connectors/qoder-native/bridge.local.json"
     native_options = json.loads(native_bridge.read_text(encoding="utf-8")) if native_bridge.exists() else {}
     native_options.setdefault("state", str(destination/".bridge"))
