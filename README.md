@@ -3,6 +3,14 @@
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
+## 0.6.5 有什么不同
+
+- **DSH 聊天变成一等公民**：新增 `dsh_plugin` 桌面传输，任务投进你已经打开的 DSH 聊天，不再为每条任务新起进程；插件按 adapter 自动发现角色，自动绑定到你自己的那个聊天（如 `CMS_Tester`），中枢没跑时自己拉起。
+- **唤醒可靠**：每个角色独立游标，一个角色卡住不再让整个项目停止扫描；改绑聊天时过期唤醒自动作废，不再互相卡死。
+- **省 token**：总线唤醒只指路，不搬运任务正文（745 → 283 字符），Qoder 连接器的汇报尾巴 ~600 → ~120 字符。
+- **看得清**：托盘状态窗口改成带列头的表格，绑定列显示真实聊天名。
+- **不靠开机自启**：用到 Agents Chat 的会话自己拉起后台；项目以前用过、这次没提，Agent 会在做完主线后问一次要不要启动。
+
 ## 一行安装（Windows 10/11）
 
 在 PowerShell 中执行：
@@ -30,7 +38,7 @@ Codex、Qoder、DSH 的技能目录（其他客户端把 `tool-skill/` 整个复
 
 装好后，在一个**新开的项目聊天**里说：
 
-> 用 agents-chat-desktop 技能把当前项目接成多角色桌面聊天协作，角色你按项目定，建好角色后分别在对应聊天里用 join 绑定，最后告诉我每个聊天该说什么。
+> 用 agents-chat-desktop 技能把当前项目接成多角色桌面聊天协作，角色你按项目定。Codex / Qoder 的聊天用 join 绑定；DSH 的聊天由宿主插件自动绑定、不需要 join。最后告诉我每个聊天该说什么。
 
 Agent 会完成或指导完成项目、角色、项目入口、MCP 配置和桌面聊天绑定。安装器会打印这句话。
 已有聊天可能缓存旧技能，需要新开一个会话才会加载最新版本。当前安装器写入 Codex、Qoder、DSH 三个用户级技能目录；其他客户端可把 `tool-skill/SKILL.md` 和 `tool-skill/agent-chat/` 放到其技能根目录。
@@ -247,12 +255,26 @@ python build_portable.py
 源码目录的 `config.local.json` 是旧的单项目格式，仍被支持：其中的 `codex`/`qoder` 保持原名，不会破坏已有状态和桌面绑定。新增项目后配置会自动升级为 v2 的 `projects` 格式，旧项目角色继续使用原名。
 
 
-## DSH 适配器（0.6.4）
+## DSH 接入：两种方式（0.6.5）
+
+### 推荐：`dsh_plugin`（投递进你正在用的聊天）
+
+插件跑在 DSH 宿主里，把任务**作为普通用户消息**送进你已打开的那个会话，任务过程和结果你都看得见，不会另起进程。
+
+- 角色怎么来：插件按 adapter 自动发现——某角色 `adapter=dsh` 就由它接管，新增角色不用改插件配置；
+- 绑哪个会话：读 DSH 的会话缓存，按标题匹配角色名（`CMS_Tester` → `tester`），不会用到插件自造的会话；
+- 会话名怎么显示：读 DSH 会话标题；取不到时回落为会话 ID；
+- 中枢没跑：插件自己执行 `start` 拉起，DSH 重启后自动恢复。
+
+配置方法见 `connectors/dsh-host/cordis.patch.yml.example`。**一个插件实例服务多个角色**，每个角色一个独立会话。
+
+### 备选：`independent_cli_task`（无人值守，新起进程）
 
 `setup --role 'leader:dsh:...'` 会把任务交给 `dsh headless` 一次性执行，结果自动回到发起方。
 
 - `dsh` 命令行本身是 `.cmd` 包装器，配置层拒绝 shell 包装器，所以适配器解析出真正的
   `DeepSeek Harness.exe --expose-internals <cli.js>` 并以 `ELECTRON_RUN_AS_NODE=1` 启动。
-- headless profile 默认走 `deepseek-official` 路由；用它跑你自己的 provider 时，需要在该 profile 的
-  `cordis.patch.yml` 里指定 provider，并把对应密钥放进环境变量（headless 读不到 GUI 的账号凭据时）。
-- 这是**无人值守执行**：任务在后台跑完把结果回传，不会注入你正在使用的 DSH 聊天窗口。
+- headless 进程**读不到 GUI 的账号凭据**，只认环境变量：用它跑自定义 provider 时，需要在该 profile 的
+  `cordis.patch.yml` 指定 provider，并把密钥导出到环境变量，否则会以
+  `MISSING_CREDENTIAL` 退出（中枢现在会把 stderr 最后一行带回给发起方）。
+- 这是**无人值守执行**：任务在后台跑完回传结果，不会注入你正在用的聊天窗口。
