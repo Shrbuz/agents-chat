@@ -217,7 +217,13 @@ class Bus:
             if event.get("in_reply_to") != expected_reply:
                 self._problem(event.get("_path"), "broken_chain",
                               "回复链对不上：这条说回复 %s，按顺序应是 %s" % (event.get("in_reply_to"), expected_reply))
-            self.apply(tasks, event)
+            try:
+                self.apply(tasks, event)
+            except (ValueError, KeyError) as exc:
+                # A message the state machine cannot place must not take the whole
+                # bus down with it; record it and keep replaying.
+                self._problem(event.get("_path"), "skipped_event",
+                              "seq %s: %s" % (event.get("sequence"), exc))
         for event in events:
             event.pop("_path", None)
         return events, tasks
@@ -266,7 +272,11 @@ class Bus:
                 "created_at": event["created_at"], "latest_result": None,
             }
         elif task_id not in tasks:
-            raise ValueError("An event references a nonexistent request.")
+            raise ValueError(
+                "事件 seq %s 的类型是 %r，但它引用的任务 %s 没有任何 request 记录。"
+                "常见原因：1) 消息类型拼错（合法类型只有 request/claim/renew/progress/blocked/result/verify/cancel）；"
+                "2) 手写消息时 task_id 与上游 request 不一致。"
+                % (event.get("sequence"), kind, task_id))
         task = tasks[task_id]
         if kind == "claim":
             task["status"] = "in_progress"
@@ -307,8 +317,12 @@ class Bus:
             lease_seconds = self.config.get("lease_seconds", 1800)
         if not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 86400:
             raise ValueError("lease-seconds must be between 30 and 86400.")
+        # Keep the idempotency fingerprint small: the body is the bulk of a message
+        # and storing it twice doubled every file for no extra safety.
+        fingerprint = {key: value for key, value in data.items() if key != "body"}
+        fingerprint["body_sha256"] = hashlib.sha256(str(data.get("body", "")).encode("utf-8")).hexdigest()
         intent = {"type": kind, "role": role, "session": session, "task_id": task_id,
-                  "data": data.copy(), "token": token, "recipient": recipient,
+                  "data": fingerprint, "token": token, "recipient": recipient,
                   "lease_seconds": lease_seconds if kind == "claim" else None}
         with self.locked():
             events, tasks = self.load()
@@ -454,3 +468,4 @@ class Bus:
         return {"project_id": self.project_id, "bus_root": str(self.root),
                 "mailboxes": {k: str(v) for k, v in self.mailboxes.items()},
                 "evidence": str(self.root / "evidence")}
+

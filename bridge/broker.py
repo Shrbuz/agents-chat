@@ -145,6 +145,13 @@ class Broker:
                     state, result = "timed_out", {"error": "queue_deadline", "summary": "Expired before runtime launch."}
                 elif self.desktop_input_disabled(name):
                     state, result = "failed", {"error":"qoder_desktop_input_disabled", "summary":"Qoder input automation is disabled; this queued task was not delivered."}
+                elif endpoint["adapter"] == "dsh" and name not in self.desktop.bindings:
+                    # DSH roles are served by the host plugin. Spawning a separate
+                    # headless process is the old way and is no longer supported:
+                    # it has no chat to show, and no GUI credentials.
+                    state, result = "failed", {
+                        "error": "dsh_requires_plugin",
+                        "summary": "dsh 角色由 DSH 宿主插件接入：请让插件绑定到你的聊天后再派任务（不再支持另起进程执行）。"}
                 else:
                     binding = self.desktop.bindings.get(name)
                     if binding:
