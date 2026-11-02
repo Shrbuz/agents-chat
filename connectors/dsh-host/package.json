@@ -1,0 +1,13 @@
+{
+  "name": "agents-chat-dsh",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deliver Agents Chat tasks as real DeepSeek Harness sessions",
+  "type": "module",
+  "main": "index.js",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}
