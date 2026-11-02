@@ -45,6 +45,14 @@ class Store:
                     created REAL NOT NULL, last_seen REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS session_role ON sessions(project, role);
                 CREATE INDEX IF NOT EXISTS session_seen ON sessions(last_seen);
+                CREATE TABLE IF NOT EXISTS bus_state (
+                    project TEXT PRIMARY KEY, cursor TEXT NOT NULL DEFAULT '',
+                    synced REAL NOT NULL DEFAULT 0);
+                CREATE TABLE IF NOT EXISTS bus_tasks (
+                    project TEXT NOT NULL, task_id TEXT NOT NULL, requester TEXT,
+                    assignee TEXT, status TEXT, priority TEXT, sequence INTEGER,
+                    lease_expires_at TEXT, updated_at TEXT, title TEXT, last_type TEXT,
+                    PRIMARY KEY(project, task_id));
             """)
 
     @contextmanager
@@ -244,3 +252,58 @@ class Store:
             counts = dict(db.execute("SELECT state,count(*) FROM tasks GROUP BY state").fetchall())
             counts["sessions"] = db.execute("SELECT count(*) FROM sessions").fetchone()[0]
             return counts
+
+    # -- file-bus projection ---------------------------------------------------
+    # The shared bus files stay authoritative. These rows are a disposable
+    # mirror so the hub and its UI can read task state without replaying the
+    # whole log, and so the wake cursor no longer needs a separate JSON file.
+
+    def bus_cursor(self, project):
+        with self.db() as db:
+            row = db.execute("SELECT cursor FROM bus_state WHERE project=?", (project,)).fetchone()
+        return row["cursor"] if row else ""
+
+    def set_bus_cursor(self, project, cursor):
+        with self.db(True) as db:
+            db.execute(
+                "INSERT INTO bus_state(project, cursor, synced) VALUES(?,?,?) "
+                "ON CONFLICT(project) DO UPDATE SET cursor=excluded.cursor, synced=excluded.synced",
+                (project, cursor, time.time()))
+
+    def sync_bus(self, project, tasks):
+        """Replace this project's projection with a replay result.
+
+        Wholesale replacement keeps the mirror honest: a task that vanished from
+        the log (or a bus that was rebuilt) cannot leave a stale row behind.
+        """
+        rows = []
+        for task in tasks.values():
+            claim = task.get("claim") or {}
+            request = task.get("request") or {}
+            rows.append((
+                project, task["task_id"], task.get("requester"), task.get("assignee"),
+                task.get("status"), request.get("priority", "P2"), task.get("sequence"),
+                claim.get("expires_at"), task.get("updated_at"),
+                request.get("title"), (task.get("last_update") or {}).get("type"),
+            ))
+        with self.db(True) as db:
+            db.execute("DELETE FROM bus_tasks WHERE project=?", (project,))
+            db.executemany(
+                "INSERT INTO bus_tasks(project, task_id, requester, assignee, status, priority, "
+                "sequence, lease_expires_at, updated_at, title, last_type) "
+                "VALUES(?,?,?,?,?,?,?,?,?,?,?)", rows)
+        return len(rows)
+
+    def bus_projection(self, project=None, include_closed=False):
+        query = "SELECT * FROM bus_tasks"
+        clauses, values = [], []
+        if project is not None:
+            clauses.append("project=?")
+            values.append(project)
+        if not include_closed:
+            clauses.append("status NOT IN ('closed','cancelled')")
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY priority, sequence"
+        with self.db() as db:
+            return [dict(row) for row in db.execute(query, values).fetchall()]

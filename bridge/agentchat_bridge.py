@@ -5,12 +5,11 @@ that skill).  This bridge only turns a new event into one bounded wakeup task
 for the role session, with no extra model polling.
 """
 import json
-import os
 from pathlib import Path
 import threading
 import time
 
-from .store import compact
+from .bus import Bus
 
 DELIVER = {"request", "result", "blocked", "cancel"}
 WAKEUP_SENDER = "agent-chat"
@@ -37,11 +36,6 @@ class AgentChatBridge:
         self.notify = notify
         self.stop = threading.Event()
         self.thread = None
-        self.cursor_path = self.state / "agent-chat-cursors.json"
-        try:
-            self.cursors = json.loads(self.cursor_path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            self.cursors = {}
         self.projects = self._prepare()
 
     def _prepare(self):
@@ -77,7 +71,12 @@ class AgentChatBridge:
 
     def status(self):
         return [{"id": p["id"], "bus": str(p["bus"]), "roles": len(p["roles"]),
-                 "helper": str(p["helper"]) if p["helper"] else None} for p in self.projects]
+                 "helper": str(p["helper"]) if p["helper"] else None,
+                 "open_tasks": len(self.store.bus_projection(p["id"]))} for p in self.projects]
+
+    def projection(self, project=None, include_closed=False):
+        """Read-only task view derived from the bus log."""
+        return self.store.bus_projection(project, include_closed=include_closed)
 
     def start(self):
         if not self.projects:
@@ -95,23 +94,16 @@ class AgentChatBridge:
         return project + ":" + bus_role
 
     def _prime_cursors(self):
-        changed = False
+        """Skip pre-existing history on first sight; the cursor lives in the store."""
         for project in self.projects:
-            for bus_role, role in project["roles"].items():
-                key = self._key(project["id"], bus_role)
-                if key in self.cursors:
-                    continue
-                files = sorted(project["bus"].glob(role["directory"] + "/*.json"))
-                self.cursors[key] = files[-1].name if files else ""
-                changed = True
-        if changed:
-            self._save()
-
-    def _save(self):
-        self.cursor_path.parent.mkdir(parents=True, exist_ok=True)
-        temp = self.cursor_path.with_suffix(".tmp")
-        temp.write_text(compact(self.cursors), encoding="utf-8")
-        os.replace(temp, self.cursor_path)
+            if self.store.bus_cursor(project["id"]):
+                continue
+            latest = ""
+            for role in project["roles"].values():
+                for path in project["bus"].glob(role["directory"] + "/*.json"):
+                    if path.name > latest:
+                        latest = path.name
+            self.store.set_bus_cursor(project["id"], latest)
 
     def _loop(self):
         while not self.stop.wait(1.5):
@@ -123,24 +115,23 @@ class AgentChatBridge:
                     continue
 
     def _scan(self, project):
+        project_id = project["id"]
+        cursor = self.store.bus_cursor(project_id)
         for bus_role, role in project["roles"].items():
-            key = self._key(project["id"], bus_role)
-            cursor = self.cursors.get(key, "")
             directory = project["bus"] / role["directory"]
-            files = sorted(directory.glob("*.json"))
-            for path in files:
+            for path in sorted(directory.glob("*.json")):
                 if path.name <= cursor:
                     continue
                 try:
                     event = json.loads(path.read_text(encoding="utf-8"))
                 except (OSError, ValueError):
-                    self.cursors[key] = path.name
-                    self._save()
+                    self.store.set_bus_cursor(project_id, path.name)
+                    cursor = path.name
                     continue
                 action = self._action(bus_role, event)
                 if action is False:
-                    self.cursors[key] = path.name
-                    self._save()
+                    self.store.set_bus_cursor(project_id, path.name)
+                    cursor = path.name
                     continue
                 if self.store.has_pending(role["address"]):
                     # Keep the cursor so the event is retried after the current task.
@@ -150,9 +141,19 @@ class AgentChatBridge:
                            "queue_ttl": 3600, "notify": False, "kind": "agent_chat_wakeup"}
                 self.store.enqueue(WAKEUP_SENDER, role["address"], "agentchat:" + str(event.get("message_id") or path.name),
                                    payload)
-                self.cursors[key] = path.name
-                self._save()
+                self.store.set_bus_cursor(project_id, path.name)
+                cursor = path.name
                 self.notify()
+        self._sync_projection(project)
+
+    def _sync_projection(self, project):
+        """Mirror replayed task state into the store; the bus remains authoritative."""
+        try:
+            _, tasks = Bus(project["bus"]).load()
+        except (OSError, ValueError):
+            # A damaged or partially written bus must never stop wakeups.
+            return
+        self.store.sync_bus(project["id"], tasks)
 
     @staticmethod
     def _action(bus_role, event):
