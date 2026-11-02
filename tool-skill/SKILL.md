@@ -7,7 +7,7 @@ description: 使用本机 Agents Chat 多项目角色中枢，让同一或不同
 
 Agents Chat 在本机托盘运行一个后台，统一管理多个项目。每个项目有若干角色，地址是 `<项目>.<角色>`；一个角色对应一个协作席位，可以由 Codex、Qoder 或同一 Agent 的另一个会话承担。任务结果自动回到发起角色，不需要人工搬运。
 
-安装器会同时安装本技能和配套的 `agent-chat` 技能。`setup` 默认会为新项目初始化 `agent_chat` 文件总线（`--no-agent-chat` 可关闭）；需要 claim/租约/result/verify 时使用配套技能的 helper，Agents Chat 只负责把新事件唤醒到对应角色。
+安装器会同时安装本技能和配套的 `agent-chat` 技能。`setup` 默认会为新项目初始化 `agent_chat` 文件总线（`--no-agent-chat` 可关闭）。claim、租约、result/verify 由本中枢原生实现（`bus` 子命令），总线文件仍是唯一真源；外部 Agent 也可以直接读写同一批文件。
 
 ## 找到命令和身份
 
@@ -62,5 +62,5 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 - 桌面聊天绑定是可选传输：Codex 用 app-tools，Qoder 用原生扩展。没有绑定桌面的角色按后台 CLI 任务执行。
 - Qoder 输入框自动操作始终禁用。Qoder 原生扩展未加载时明确报离线，不退回输入框或独立 CLI 冒充。
 - `succeeded` 只表示 Runtime 正常结束，不等于业务验收；结果仍要核对证据。
-- 如果项目使用 `agent-chat` 文件总线，Agents Chat 只负责在新事件出现时唤醒对应角色会话；claim、租约、result/verify 以 `agent-chat` skill 的协议为准，不要把两套状态混用。
+- 如果项目使用 `agent-chat` 文件总线，需要 claim、租约和验收时用 `bus` 子命令（原生实现同一协议，例如 `bus inbox` / `bus claim` / `bus result` / `bus verify`）；同一个请求只能由一条链路派发，已经用 agent-chat `send` 派发的任务，不要再对同一任务调用 Agents Chat `send`。
 - 同一个请求只能由一条链路派发：已经用 agent-chat `send` 的任务，不要再对同一任务调用 Agents Chat `send`。
