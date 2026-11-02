@@ -102,14 +102,39 @@ function sessionForRole(role) {
   const match = dshSessions().find((session) => session.title.toLowerCase().includes(needle))
   return match ? match.id : null
 }
-async function hubCall(config, method, params) {
-  const endpointPath = path.join(path.dirname(config.cli), '.bridge', 'endpoint.json')
-  const endpoint = JSON.parse(fs.readFileSync(endpointPath, 'utf8'))
-  const response = await fetch(endpoint.url + '/call', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + endpoint.token },
-    body: JSON.stringify({ method, params }),
+let startedHub = 0
+
+/** Start the hub once per minute when it is not running, then retry the call. */
+async function ensureHub(config) {
+  if (Date.now() - startedHub < 60000) return false
+  startedHub = Date.now()
+  await new Promise((resolve) => {
+    execFile(config.cli, ['start'], { windowsHide: true }, () => resolve())
   })
+  return true
+}
+
+async function hubCall(config, method, params, retried) {
+  const endpointPath = path.join(path.dirname(config.cli), '.bridge', 'endpoint.json')
+  let endpoint
+  try {
+    endpoint = JSON.parse(fs.readFileSync(endpointPath, 'utf8'))
+  } catch (error) {
+    if (!retried && await ensureHub(config)) return hubCall(config, method, params, true)
+    throw new Error('broker_not_running: ' + (error?.message || error))
+  }
+  let response
+  try {
+    response = await fetch(endpoint.url + '/call', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + endpoint.token },
+      body: JSON.stringify({ method, params }),
+    })
+  } catch (error) {
+    // A stale endpoint file means the hub died; start it and retry once.
+    if (!retried && await ensureHub(config)) return hubCall(config, method, params, true)
+    throw new Error('broker_unreachable: ' + (error?.message || error))
+  }
   const payload = await response.json().catch(() => ({}))
   if (!response.ok) throw new Error(payload.error || 'HTTP ' + response.status)
   return payload.result
@@ -339,4 +364,6 @@ export function apply(ctx, rawConfig) {
 
   refresh(true)
 }
+
+
 
