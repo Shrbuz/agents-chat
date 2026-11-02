@@ -15,6 +15,7 @@ from .onboarding import add_role as add_project_role
 from .onboarding import cli_command, role_prompt, setup as setup_project, update_entry
 from .paths import ROOT, default_config, project_context, resolve_config, resolve_state
 from .store import compact
+from .buscli import add_commands as add_bus_commands, bus_root, run as run_bus
 
 from . import __version__ as VERSION
 
@@ -338,6 +339,7 @@ def parser():
     _project_option(unbind)
     unbind.add_argument("--role", required=True)
     # setup
+    add_bus_commands(sub)
     s = sub.add_parser("setup")
     _project_option(s)
     s.add_argument("--root", required=True, help="Project root folder")
@@ -445,6 +447,8 @@ def main():
             result = project_command(args, config, state)
         elif args.command == "role":
             result = role_command(args, config, state, project)
+        elif args.command == "bus":
+            result = run_bus(args, bus_root(config, project))
         elif args.command == "setup":
             roles = _role_specs(args.role, args.adapter)
             result = setup_project(config, args.root, project=getattr(args, "project_local", None) or args.project,
