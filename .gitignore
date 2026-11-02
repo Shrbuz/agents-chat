@@ -23,3 +23,6 @@ verification.json
 demo-report.json
 test-results.txt
 COPY-MANIFEST.json
+
+# machine-specific DSH overlay
+connectors/dsh-host/cordis.patch.yml
