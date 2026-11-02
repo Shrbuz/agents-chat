@@ -10,6 +10,7 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parent
+VERSION = (ROOT / "VERSION").read_text(encoding="utf-8").strip() if (ROOT / "VERSION").is_file() else "0.0.0"
 
 
 def definitely_stopped(pid):
@@ -175,7 +176,7 @@ def main():
     create_shortcut(desktop / "Agents Chat.lnk", executable, "", destination)
     import winreg
     with winreg.CreateKey(winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall\AgentsChat") as key:
-        for name, value in {"DisplayName": "Agents Chat", "DisplayVersion": "0.5.2", "InstallLocation": str(destination),
+        for name, value in {"DisplayName": "Agents Chat", "DisplayVersion": VERSION, "InstallLocation": str(destination),
                             "DisplayIcon": str(executable),
                             "UninstallString": subprocess.list2cmdline([str(executable), "uninstall"])}.items():
             winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)

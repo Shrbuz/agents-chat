@@ -2,6 +2,19 @@
 
 本文件只记录可公开复现的检查。真实桌面聊天 ID、任务 ID、业务项目路径和本机截图不进入开源仓库。
 
+## 0.5.3 配套技能的解释器
+
+安装器宣称“不需要预装 Python”，但随包复制的 `agent-chat` 配套技能，其 `scripts/agent_chat.py` 依赖 `python`。目标机没有 Python 时，技能会被装好却无法执行，且没有任何提示。
+
+| 检查 | 结果 |
+|---|---|
+| 解析顺序 | 安装时依次探测包内 `runtime\python\python.exe` → PATH 的 `python` → `py` 启动器 |
+| 落盘 | 把实际路径写入技能目录的 `runtime.json`（`source` 为 `bundled`/`path`/`py-launcher`/`missing`）；`SKILL.md` 要求优先读取该文件 |
+| 无解释器 | 写入 `source: "missing"`，并在安装日志明确警告“技能已复制但不可执行”，不静默通过 |
+| 保护用户副本 | `agent-chat` 目录已存在时不覆盖；是 Junction 时不写入 `runtime.json` |
+| 实测（摘掉 PATH 中的 Python） | 便携包 → `bundled`；去掉包内运行时但有 `py.exe` → `py-launcher`；PATH 仅剩 System32 → `missing` 并输出警告 |
+| 回归 | 48 项 Python 测试通过；三个 `.ps1` 的 PowerShell AST 解析无错误 |
+
 ## 0.5.2 安装器安全加固（2026-10-31）
 
 一次真实的安装器测试事故暴露了这两个脚本缺护栏：`[System.IO.Path]::GetFullPath("")` 在 Windows PowerShell 5.1 中返回**当前工作目录**，因此空的 `-Destination` 会让后续 `Remove-Item -Recurse -Force` 落在 CWD 上；而两个脚本对 `$Destination` 原本没有任何校验。

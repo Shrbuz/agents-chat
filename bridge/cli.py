@@ -16,7 +16,7 @@ from .onboarding import cli_command, role_prompt, setup as setup_project, update
 from .paths import ROOT, default_config, project_context, resolve_config, resolve_state
 from .store import compact
 
-VERSION = "0.5.2"
+from . import __version__ as VERSION
 
 
 def start_desktop_connectors(state, config_path=None):

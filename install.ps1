@@ -145,6 +145,25 @@ function Get-Release([string]$Repository, [string]$Tag) {
     }
 }
 
+# The bundled agent-chat companion skill runs a Python helper. The installer
+# advertises "no Python required", so record a working interpreter for the
+# skill instead of leaving it to fail on a bare `python` lookup.
+function Resolve-SkillInterpreter([string]$Root) {
+    $bundled = Join-Path $Root "runtime\python\python.exe"
+    if (Test-Path $bundled) {
+        return [pscustomobject]@{ python = $bundled; source = "bundled" }
+    }
+    $found = Get-Command python -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($found) {
+        return [pscustomobject]@{ python = $found.Source; source = "path" }
+    }
+    $launcher = Get-Command py -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($launcher) {
+        return [pscustomobject]@{ python = $launcher.Source; source = "py-launcher" }
+    }
+    return $null
+}
+
 function Install-Skill([string]$Root) {
     $source = Join-Path $Root "tool-skill\SKILL.md"
     if (-not (Test-Path $source)) { Write-Warning "skill source not found; skipped"; return }
@@ -153,6 +172,7 @@ function Install-Skill([string]$Root) {
         return
     }
     $legacySource = Join-Path $Root "tool-skill\agent-chat"
+    $interpreter = Resolve-SkillInterpreter $Root
     $roots = @(
         (Join-Path $env:USERPROFILE ".codex\skills"),
         (Join-Path $env:USERPROFILE ".qoder\skills"),
@@ -165,11 +185,39 @@ function Install-Skill([string]$Root) {
         # Include the file-bus/claim/verify protocol as a companion skill.
         # Keep a user-managed copy or junction untouched.
         $legacy = Join-Path $skills "agent-chat"
+        $fresh = $false
         if ((Test-Path $legacySource) -and -not (Test-Path $legacy)) {
             Copy-Item -Path $legacySource -Destination $legacy -Recurse -Force
+            $fresh = $true
+        }
+        if (Test-Path $legacy) {
+            $entry = Get-Item -LiteralPath $legacy -Force
+            if ($entry.LinkType -ne 'Junction') {
+                $runtimePath = Join-Path $legacy "runtime.json"
+                if ($fresh -or -not (Test-Path $runtimePath)) {
+                    if ($interpreter) {
+                        [pscustomobject]@{
+                            python = $interpreter.python
+                            source = $interpreter.source
+                            written = (Get-Date).ToString("s")
+                        } | ConvertTo-Json -Compress | Set-Content -Path $runtimePath -Encoding utf8
+                    } else {
+                        [pscustomobject]@{
+                            python = $null
+                            source = "missing"
+                            note = "no Python interpreter found; the companion skill was copied but cannot run"
+                        } | ConvertTo-Json -Compress | Set-Content -Path $runtimePath -Encoding utf8
+                    }
+                }
+            }
         }
     }
     Write-Host ("    skills installed for Codex/Qoder/DSH (agents-chat-desktop + agent-chat)")
+    if ($interpreter) {
+        Write-Host ("    companion skill interpreter: " + $interpreter.source)
+    } else {
+        Write-Warning "no Python interpreter found: the agent-chat companion skill is copied but not runnable."
+    }
 }
 
 function New-Shortcut([string]$Path, [string]$Target, [string]$Arguments, [string]$WorkingDirectory, [string]$Description) {

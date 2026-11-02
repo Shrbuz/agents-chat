@@ -53,6 +53,19 @@ python /absolute/path/to/agent-chat/scripts/agent_chat.py --project /absolute/pr
 python /absolute/path/to/agent-chat/scripts/agent_chat.py --project /absolute/project status --role backend
 ```
 
+The installer records the interpreter it wants you to use in `runtime.json`
+next to this file. Read it first and substitute its `python` value for the bare
+`python` above:
+
+```text
+{ "python": "C:\\...\\runtime\\python\\python.exe", "source": "bundled" }
+```
+
+`source` is `bundled` (the interpreter shipped with the Agents Chat install),
+`path` (a system Python), `py-launcher`, or `missing`. When it is `missing`, or
+when `runtime.json` is absent, fall back to `python` on PATH and tell the user
+the companion skill has no interpreter configured instead of silently failing.
+
 Use absolute paths when the skill is outside the current repository. Read
 [references/commands.md](references/commands.md) for exact commands and
 initializing another project.
