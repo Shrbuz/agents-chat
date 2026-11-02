@@ -260,6 +260,15 @@ function Find-Qoder([string]$Root, [string]$Explicit) {
 
 function Install-QoderShortcuts([string]$Root, [string]$Qoder) {
     if (-not $Qoder) { return $false }
+    # Qoder only loads an unverified dev plugin when these are set. Writing them
+    # at user scope means an ordinary launch works afterwards, so users do not
+    # need a special shortcut.
+    $plugin = Join-Path $Root "connectors\qoder-native"
+    if (Test-Path $plugin) {
+        [Environment]::SetEnvironmentVariable("QODER_APP_PLUGIN_ALLOW_UNVERIFIED", "true", "User")
+        [Environment]::SetEnvironmentVariable("QODER_APP_PLUGIN_DEV_DIRS", $plugin, "User")
+        Write-Host "    Qoder connector enabled for normal launches (restart Qoder once)"
+    }
     $settings = @{ app = $Qoder } | ConvertTo-Json -Compress
     Set-Content -Path (Join-Path $Root "qoder-native-launch.local.json") -Value $settings -Encoding utf8
     $exe = Join-Path $Root "AgentsChat.exe"
