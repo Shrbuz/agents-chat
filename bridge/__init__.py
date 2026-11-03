@@ -1,5 +1,6 @@
 """Agents Chat: local multi-project, multi-role agent collaboration hub."""
-__version__ = "0.6.7"
+__version__ = "0.6.8"
+
 
 
 

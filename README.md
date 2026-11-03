@@ -3,7 +3,7 @@
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-## 0.6.7 有什么不同
+## 0.6.8 有什么不同
 
 - **DSH 聊天变成一等公民**：新增 `dsh_plugin` 桌面传输，任务投进你已经打开的 DSH 聊天，不再为每条任务新起进程；插件按 adapter 自动发现角色，自动绑定到你自己的那个聊天（如 `CMS_Tester`），中枢没跑时自己拉起。
 - **唤醒可靠**：每个角色独立游标，一个角色卡住不再让整个项目停止扫描；改绑聊天时过期唤醒自动作废，不再互相卡死。
@@ -16,6 +16,9 @@
 - **消息文件不再存两份正文**：`intent` 只存正文的 sha256，1500 字的请求从 ~8.7KB 降到 ~2.3KB。
 - **放不进去的事件不再拖垮总线**：未知类型、找不到上游 request 都只记一条问题，其余照常；报错会指明 seq、类型和常见原因。
 - **弃用 dsh 的子进程模式**：dsh 角色未绑定插件时直接报 `dsh_requires_plugin`，不再新起 headless 进程、也不再需要那个 key。
+- **换人接手有正式命令**：`release`（做的人交还，带回交接说明）和 `reassign`（发起方强制收回），接手方 `claim` 即刻生效，不用等租期。
+- **技能脚本也抗坏了**：Agent 实际用的 `agent_chat.py` 同样会跳过读不懂的消息，一个坏文件不再让所有人停摆。
+- **唤醒按类型给动作**：request 说“领取并处理”，result 说“查看即可”，reassign 说“停止手上工作”，不再一律“领取”。
 
 ## 一行安装（Windows 10/11）
 
@@ -284,5 +287,6 @@ python build_portable.py
   `cordis.patch.yml` 指定 provider，并把密钥导出到环境变量，否则会以
   `MISSING_CREDENTIAL` 退出（中枢现在会把 stderr 最后一行带回给发起方）。
 - 这是**无人值守执行**：任务在后台跑完回传结果，不会注入你正在用的聊天窗口。
+
 
 
