@@ -360,6 +360,9 @@ class Bus:
                 target, previous = task["requester"], task["last_message_id"]
                 claim = task["claim"]
                 if kind == "claim":
+                    active = self._active_sessions()
+                    if active is not None and role in active and active[role] != session:
+                        raise ValueError("session_not_active: 该角色的活跃会话是 %s；请先接管或结束旧会话" % active[role])
                     if role != task["assignee"] or task["status"] not in ("pending", "blocked", "in_progress"):
                         raise ValueError("Only the assigned role can claim pending/blocked/expired work.")
                     if claim and parse_time(claim["expires_at"]) > now:
@@ -448,6 +451,17 @@ class Bus:
             atomic_json(path, {"role": role, "session": session, "message_ids": sorted(seen)})
             return {"marked_read": message_ids}
 
+    def _active_sessions(self):
+        """role -> active session id, published by the hub; None when absent."""
+        path = self.root / "_state" / "active-sessions.json"
+        if not path.is_file():
+            return None
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
     def status(self, role=None, include_closed=False):
         if role is not None:
             self.require_role(role)
@@ -485,4 +499,5 @@ class Bus:
         return {"project_id": self.project_id, "bus_root": str(self.root),
                 "mailboxes": {k: str(v) for k, v in self.mailboxes.items()},
                 "evidence": str(self.root / "evidence")}
+
 

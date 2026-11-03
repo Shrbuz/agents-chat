@@ -198,6 +198,20 @@ class DamageTests(unittest.TestCase):
         out = self.bus.submit("reassign", "frontend", "fe-1", task_id=task_id, data={"body": "换人做"})
         self.assertEqual(out["task"]["status"], "pending")
         self.assertIsNone(out["task"]["claim"])
+    def test_claim_is_refused_for_a_session_the_role_moved_away_from(self):
+        task_id = request(self.bus)["task"]["task_id"]
+        active = self.root / "_state"
+        active.mkdir(parents=True, exist_ok=True)
+        (active / "active-sessions.json").write_text('{"backend": "be-new"}', encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "session_not_active"):
+            self.bus.submit("claim", "backend", "be-old", task_id=task_id)
+        claimed = self.bus.submit("claim", "backend", "be-new", task_id=task_id)
+        self.assertEqual(claimed["task"]["claim"]["session"], "be-new")
+
+    def test_claim_is_unrestricted_when_no_active_map_exists(self):
+        task_id = request(self.bus)["task"]["task_id"]
+        claimed = self.bus.submit("claim", "backend", "anything", task_id=task_id)
+        self.assertEqual(claimed["task"]["claim"]["session"], "anything")
     def test_gap_in_sequence_is_reported_not_fatal(self):
         task_id = request(self.bus)["task"]["task_id"]
         token = self.bus.submit("claim", "backend", "be-1", task_id=task_id)["event"]["data"]["token"]
@@ -269,5 +283,6 @@ class ConformanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 
 

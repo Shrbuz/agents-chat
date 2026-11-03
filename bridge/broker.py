@@ -101,6 +101,8 @@ class Broker:
                     self.desktop.bindings.pop(name, None)
 
     def start(self):
+        for project_id in self.config.get("projects", {}):
+            self.write_active_sessions(project_id)
         for name, endpoint in self.endpoints.items():
             if endpoint.get("enabled", True):
                 worker = threading.Thread(target=self.worker, args=(name,), name="adapter-" + name, daemon=True)
@@ -197,6 +199,40 @@ class Broker:
             return "desktop_mailbox"
         return "desktop_session" if internal in self.desktop.bindings else "independent_cli_task"
 
+    def active_sessions(self, project=None):
+        """role -> bound desktop session id, per project."""
+        result = {}
+        for name, binding in self.desktop.bindings.items():
+            endpoint = self.endpoints.get(name)
+            if not endpoint or not binding.get("session_id"):
+                continue
+            if project is not None and endpoint.get("project") != project:
+                continue
+            result[endpoint["role"]] = binding["session_id"]
+        return result
+
+    def write_active_sessions(self, project_id):
+        """Publish the role -> session map into the project's bus.
+
+        The bus is role-level by design, so without this file any live session
+        claiming to be that role can take work. The map lets both bus clients
+        refuse a session the role has moved away from.
+        """
+        project = self.config["projects"].get(project_id) or {}
+        bus = (project.get("agent_chat") or {}).get("bus")
+        if not bus:
+            return
+        path = Path(bus) / "_state" / "active-sessions.json"
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_suffix(".tmp")
+            temporary.write_text(json.dumps(self.active_sessions(project_id), ensure_ascii=False, indent=2),
+                                 encoding="utf-8")
+            os.replace(temporary, path)
+        except OSError:
+            # A missing bus must not break binding; the hub still routes by role.
+            pass
+
     def desktop_input_disabled(self, agent):
         binding = self.desktop.bindings.get(agent, {})
         return (binding.get("transport") == "qoder_accessibility"
@@ -283,8 +319,45 @@ class Broker:
             if chat:
                 self.store.register_session("desktop:" + chat, endpoint["project"], endpoint["role"],
                                             endpoint["adapter"], transport, "桌面聊天绑定")
+            self.write_active_sessions(endpoint["project"])
             return {"agent": internal, "address": internal, "mode": "desktop_session" if chat else "independent_cli_task",
                     "session_id": chat, "transport": transport}
+        if method == "session_takeover":
+            # One action moves a role to another chat: bind, retire the rest, and
+            # publish the active session so the bus can refuse the old one.
+            internal = self.resolve(p.get("agent") or p.get("role"), p.get("project"), required=True)
+            endpoint = self.endpoints[internal]
+            takeover_session, transport = p["session_id"], p["transport"]
+            if not isinstance(takeover_session, str) or not takeover_session:
+                raise ValueError("invalid_desktop_session_id")
+            with self.cv:
+                self.desktop.bind(internal, {"session_id": takeover_session, "transport": transport})
+            if self.store.has_pending(internal):
+                self.store.cancel_wakeups(internal)
+            self.store.register_session("desktop:" + takeover_session, endpoint["project"], endpoint["role"],
+                                        endpoint["adapter"], transport, "桌面聊天绑定")
+            retired = self.store.retire_role_sessions(endpoint["project"], endpoint["role"],
+                                                      keep="desktop:" + takeover_session)
+            self.write_active_sessions(endpoint["project"])
+            return {"agent": internal, "session_id": takeover_session, "retired": retired}
+        if method == "session_retire":
+            retire_target = p.get("session_id")
+            if not isinstance(retire_target, str) or not retire_target:
+                raise ValueError("invalid_session_id")
+            self.store.retire_session("desktop:" + retire_target, p.get("reason", "retired by user"))
+            for name, binding in list(self.desktop.bindings.items()):
+                if binding.get("session_id") != retire_target:
+                    continue
+                endpoint = self.endpoints.get(name)
+                with self.cv:
+                    self.desktop.bind(name, None)
+                if endpoint:
+                    self.write_active_sessions(endpoint["project"])
+            return {"retired": retire_target}
+        if method in ("sessions", "session_list"):
+            return {"sessions": self.store.list_sessions(project=p.get("project"), role=p.get("role"),
+                                                         include_offline=True),
+                    "active": self.active_sessions(p.get("project"))}
         if method == "desktop_receive":
             value = p.get("agent", p.get("role"))
             if not isinstance(value, str):
@@ -293,6 +366,8 @@ class Broker:
             binding = self.desktop.bindings.get(internal)
             if not binding or binding["session_id"] != p["session_id"]:
                 raise ValueError("desktop_session_not_bound")
+            if self.store.session_retired("desktop:" + p["session_id"]):
+                raise ValueError("session_retired")
             seconds = p.get("seconds", 40)
             if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 <= seconds <= 45:
                 raise ValueError("invalid_receive_timeout")
@@ -520,5 +595,6 @@ def serve(state_dir, config_path):
                     time.sleep(.05)
         finally:
             broker.lock.close()
+
 
 

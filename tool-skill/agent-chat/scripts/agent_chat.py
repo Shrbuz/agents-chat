@@ -396,6 +396,16 @@ class Bus:
         sequences.add(seq)
         event["_path"] = str(path)
         return event
+    def _active_sessions(self):
+        path = self.root / "_state" / "active-sessions.json"
+        if not path.is_file():
+            return None
+        try:
+            data = read_json(path)
+        except (OSError, ValueError):
+            return None
+        return data if isinstance(data, dict) else None
+
     @staticmethod
     def apply(tasks, event):
         kind, task_id, data = event["type"], event["task_id"], event["data"]
@@ -484,6 +494,9 @@ class Bus:
                 target, previous = task["requester"], task["last_message_id"]
                 claim = task["claim"]
                 if kind == "claim":
+                    active = self._active_sessions()
+                    if active is not None and role in active and active[role] != session:
+                        raise ValueError("session_not_active: 该角色的活跃会话是 %s；请先接管或结束旧会话" % active[role])
                     if role != task["assignee"] or task["status"] not in ("pending", "blocked", "in_progress"):
                         raise ValueError("Only the assigned role can claim pending/blocked/expired work.")
                     if claim and parse_time(claim["expires_at"]) > now:
@@ -764,6 +777,7 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
 
 

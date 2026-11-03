@@ -656,7 +656,8 @@ namespace AgentsChatLauncher
                     delegate { ToggleHub(); },
                     delegate { StopHubAndExit(); },
                     delegate { RefreshAsync(); },
-                    delegate (string path) { OpenFolder(path); });
+                    delegate (string path) { OpenFolder(path); },
+                    delegate (string projectId, string address) { SwitchSession(projectId, address); });
             panel.SetStatus(lastStatus, configPath, stateDir);
             if (!panel.Visible)
                 panel.Show();
@@ -668,6 +669,65 @@ namespace AgentsChatLauncher
             }
         }
 
+        private Dictionary<string, object> Endpoint()
+        {
+            string endpointPath = Path.Combine(stateDir, "endpoint.json");
+            if (!File.Exists(endpointPath)) return null;
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            return serializer.DeserializeObject(File.ReadAllText(endpointPath, Encoding.UTF8)) as Dictionary<string, object>;
+        }
+
+        private void SwitchSession(string projectId, string address)
+        {
+            Dictionary<string, object> endpoint = Endpoint();
+            if (endpoint == null)
+            {
+                MessageBox.Show("后台没有运行，先启动它。", "切换会话", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            Dictionary<string, object> parameters = new Dictionary<string, object>();
+            parameters["project"] = projectId;
+            Dictionary<string, object> listed;
+            try
+            {
+                listed = Call(endpoint, "session_list", parameters) as Dictionary<string, object>;
+            }
+            catch (Exception error)
+            {
+                MessageBox.Show("读取会话失败：" + error.Message, "切换会话", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (listed == null) return;
+            List<Dictionary<string, object>> sessions = new List<Dictionary<string, object>>();
+            string roleName = address.Substring(address.LastIndexOf('.') + 1);
+            foreach (object item in TrayApp.Sequence(listed.ContainsKey("sessions") ? listed["sessions"] : null))
+            {
+                Dictionary<string, object> session = item as Dictionary<string, object>;
+                if (session == null) continue;
+                if (Convert.ToString(session["role"]) != roleName) continue;
+                sessions.Add(session);
+            }
+            using (SessionPickerForm picker = new SessionPickerForm(sessions))
+            {
+                if (picker.ShowDialog() != DialogResult.OK || picker.SelectedSession == null) return;
+                Dictionary<string, object> takeover = new Dictionary<string, object>();
+                takeover["agent"] = address;
+                takeover["project"] = projectId;
+                takeover["session_id"] = picker.SelectedSession;
+                takeover["transport"] = picker.SelectedTransport;
+                try
+                {
+                    Call(endpoint, "session_takeover", takeover);
+                    MessageBox.Show("已把 " + address + " 切换到 " + picker.SelectedSession + "。",
+                                    "切换会话", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshAsync();
+                }
+                catch (Exception error)
+                {
+                    MessageBox.Show("切换失败：" + error.Message, "切换会话", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                }
+            }
+        }
         protected override void Dispose(bool disposing)
         {
             if (disposing)
@@ -709,6 +769,125 @@ namespace AgentsChatLauncher
         }
     }
 
+    internal sealed class SessionPickerForm : Form
+    {
+        public string SelectedSession;
+        public string SelectedTransport;
+
+        private readonly ListView list;
+        private readonly TextBox manual;
+
+        public SessionPickerForm(List<Dictionary<string, object>> sessions)
+        {
+            Text = "切换角色会话";
+            Width = 760;
+            Height = 440;
+            MinimumSize = new Size(520, 320);
+            StartPosition = FormStartPosition.CenterParent;
+            Font = new Font("Microsoft YaHei UI", 9F);
+
+            list = new ListView();
+            list.Dock = DockStyle.Fill;
+            list.View = View.Details;
+            list.FullRowSelect = true;
+            list.GridLines = true;
+            list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
+            list.HideSelection = false;
+            list.Columns.Add("状态", 56);
+            list.Columns.Add("会话", 320);
+            list.Columns.Add("备注", 190);
+            list.Columns.Add("最近活动", 120);
+            list.DoubleClick += delegate { Accept(); };
+            Controls.Add(list);
+
+            sessions.Sort(delegate(Dictionary<string, object> left, Dictionary<string, object> right)
+            {
+                bool leftOnline = Convert.ToBoolean(left["online"]);
+                bool rightOnline = Convert.ToBoolean(right["online"]);
+                if (leftOnline != rightOnline) return leftOnline ? -1 : 1;
+                return Convert.ToDouble(right["last_seen"]).CompareTo(Convert.ToDouble(left["last_seen"]));
+            });
+            foreach (Dictionary<string, object> session in sessions)
+            {
+                bool online = Convert.ToBoolean(session["online"]);
+                string id = Convert.ToString(session["id"]).Replace("desktop:", "");
+                ListViewItem row = new ListViewItem(online ? "在线" : "历史");
+                row.SubItems.Add(id);
+                row.SubItems.Add(Convert.ToString(session["description"]));
+                row.SubItems.Add(Stamp(session["last_seen"]));
+                row.Tag = session;
+                if (online) row.ForeColor = Color.FromArgb(20, 110, 60);
+                list.Items.Add(row);
+            }
+
+            Panel manualRow = new Panel();
+            manualRow.Dock = DockStyle.Bottom;
+            manualRow.Height = 40;
+            Controls.Add(manualRow);
+            Label manualLabel = new Label();
+            manualLabel.Text = "或直接填写会话 ID：";
+            manualLabel.Left = 12;
+            manualLabel.Top = 12;
+            manualLabel.Width = 150;
+            manualRow.Controls.Add(manualLabel);
+            manual = new TextBox();
+            manual.Left = 165;
+            manual.Top = 9;
+            manual.Width = 540;
+            manualRow.Controls.Add(manual);
+
+            Panel buttons = new Panel();
+            buttons.Dock = DockStyle.Bottom;
+            buttons.Height = 50;
+            Controls.Add(buttons);
+
+            Button ok = new Button();
+            ok.Text = "切换到这个会话";
+            ok.Width = 150;
+            ok.Left = 12;
+            ok.Top = 10;
+            ok.Click += delegate { Accept(); };
+            buttons.Controls.Add(ok);
+
+            Button cancel = new Button();
+            cancel.Text = "取消";
+            cancel.Width = 80;
+            cancel.Left = 172;
+            cancel.Top = 10;
+            cancel.DialogResult = DialogResult.Cancel;
+            buttons.Controls.Add(cancel);
+        }
+
+        private void Accept()
+        {
+            string typed = manual == null ? "" : manual.Text.Trim();
+            if (typed.Length > 0)
+            {
+                SelectedSession = typed;
+                SelectedTransport = "dsh_plugin";
+                DialogResult = DialogResult.OK;
+                Close();
+                return;
+            }
+            if (list.SelectedItems.Count == 0) return;
+            Dictionary<string, object> session = list.SelectedItems[0].Tag as Dictionary<string, object>;
+            if (session == null) return;
+            SelectedSession = Convert.ToString(session["id"]).Replace("desktop:", "");
+            SelectedTransport = Convert.ToString(session["transport"]);
+            DialogResult = DialogResult.OK;
+            Close();
+        }
+
+        private static string Stamp(object value)
+        {
+            try
+            {
+                DateTime time = DateTimeOffset.FromUnixTimeSeconds((long)Convert.ToDouble(value)).ToLocalTime().DateTime;
+                return time.ToString("MM-dd HH:mm");
+            }
+            catch { return ""; }
+        }
+    }
     internal sealed class StatusForm : Form
     {
         private readonly ListView list;
@@ -718,13 +897,16 @@ namespace AgentsChatLauncher
         private readonly Action stopAndExit;
         private readonly Action refresh;
         private readonly Action<string> openFolder;
+        private readonly Action<string, string> takeover;
 
-        public StatusForm(Action startStop, Action stopAndExit, Action refresh, Action<string> openFolder)
+        public StatusForm(Action startStop, Action stopAndExit, Action refresh, Action<string> openFolder,
+                          Action<string, string> takeover)
         {
             this.startStop = startStop;
             this.stopAndExit = stopAndExit;
             this.refresh = refresh;
             this.openFolder = openFolder;
+            this.takeover = takeover;
             Text = "Agents Chat · 多项目角色协作";
             Width = 860;
             Height = 520;
@@ -791,10 +973,27 @@ namespace AgentsChatLauncher
             config.Click += delegate { this.openFolder(Path.GetDirectoryName(paths == null ? "" : paths.Tag as string ?? "")); };
             buttons.Controls.Add(config);
 
+            Button switchSession = new Button();
+            switchSession.Text = "切换会话…";
+            switchSession.Width = 110;
+            switchSession.Left = 522;
+            switchSession.Top = 10;
+            switchSession.Click += delegate
+            {
+                if (list.SelectedItems.Count == 0)
+                {
+                    MessageBox.Show(this, "先在列表里选一个角色。", "切换会话", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    return;
+                }
+                string tag = Convert.ToString(list.SelectedItems[0].Tag);
+                string[] parts = tag.Split('|');
+                if (parts.Length == 2) takeover(parts[0], parts[1]);
+            };
+            buttons.Controls.Add(switchSession);
             Button quit = new Button();
             quit.Text = "停止后台并退出";
             quit.Width = 140;
-            quit.Left = 382;
+            quit.Left = 642;
             quit.Top = 10;
             quit.Click += delegate { this.stopAndExit(); };
             buttons.Controls.Add(quit);
@@ -858,6 +1057,7 @@ namespace AgentsChatLauncher
                         Dictionary<string, object> role = roleObject as Dictionary<string, object>;
                         if (role == null) continue;
                         ListViewItem row = new ListViewItem(Convert.ToString(project["name"]));
+                        row.Tag = Convert.ToString(project["id"]) + "|" + Convert.ToString(role["address"]);
                         row.SubItems.Add(Convert.ToString(role["role"]));
                         row.SubItems.Add(Convert.ToString(role["adapter"]));
                         row.SubItems.Add(Convert.ToString(role["mode"]));
@@ -920,4 +1120,8 @@ namespace AgentsChatLauncher
         }
     }
 }
+
+
+
+
 

@@ -44,8 +44,7 @@ class Store:
                     description TEXT, metadata TEXT,
                     created REAL NOT NULL, last_seen REAL NOT NULL);
                 CREATE INDEX IF NOT EXISTS session_role ON sessions(project, role);
-                CREATE INDEX IF NOT EXISTS session_seen ON sessions(last_seen);
-                CREATE TABLE IF NOT EXISTS bus_state (
+                CREATE INDEX IF NOT EXISTS session_seen ON sessions(last_seen);                CREATE TABLE IF NOT EXISTS bus_state (
                     project TEXT PRIMARY KEY, cursor TEXT NOT NULL DEFAULT '',
                     synced REAL NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS bus_tasks (
@@ -54,6 +53,11 @@ class Store:
                     lease_expires_at TEXT, updated_at TEXT, title TEXT, last_type TEXT,
                     PRIMARY KEY(project, task_id));
             """)
+            # A session can be retired explicitly (the user moved to a new chat).
+            # Older databases predate the column, so add it defensively.
+            columns = {row[1] for row in db.execute("PRAGMA table_info(sessions)")}
+            if "retired" not in columns:
+                db.execute("ALTER TABLE sessions ADD COLUMN retired INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
     def db(self, write=False):
@@ -237,6 +241,31 @@ class Store:
                 dropped.append(row["id"])
             return dropped
 
+    def retire_session(self, session_id, reason=""):
+        """Mark a session as finished: no more delivery, no more claiming."""
+        with self.db(True) as db:
+            row = db.execute("UPDATE sessions SET retired=1, status='retired', description=?"
+                             " WHERE id=?", (reason[:300], session_id))
+            return {"retired": row.rowcount}
+
+    def retire_role_sessions(self, project, role, keep=None):
+        """Retire every session of a role except the one being taken over."""
+        with self.db(True) as db:
+            if keep:
+                rows = db.execute("SELECT id FROM sessions WHERE project=? AND role=? AND id<>? AND retired=0",
+                                  (project, role, keep)).fetchall()
+            else:
+                rows = db.execute("SELECT id FROM sessions WHERE project=? AND role=? AND retired=0",
+                                  (project, role)).fetchall()
+            for row in rows:
+                db.execute("UPDATE sessions SET retired=1, status='retired' WHERE id=?", (row[0],))
+            return [row[0] for row in rows]
+
+    def session_retired(self, session_id):
+        with self.db() as db:
+            row = db.execute("SELECT retired FROM sessions WHERE id=?", (session_id,)).fetchone()
+            return bool(row and row[0])
+
     def prune_stale_role_sessions(self, project, role, keep, keep_alive=600):
         """Drop other sessions of a role that have gone quiet.
 
@@ -361,3 +390,5 @@ class Store:
         query += " ORDER BY priority, sequence"
         with self.db() as db:
             return [dict(row) for row in db.execute(query, values).fetchall()]
+
+

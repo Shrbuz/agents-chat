@@ -299,6 +299,19 @@ def parser():
     _project_option(s)
     s.add_argument("--role")
     s.add_argument("--online", action="store_true")
+    # session lifecycle: take a role over, or retire a chat for good
+    session = sub.add_parser("session")
+    session_sub = session.add_subparsers(dest="session_command", required=True)
+    takeover = session_sub.add_parser("takeover", help="Move a role to another chat and retire the old ones")
+    _project_option(takeover)
+    takeover.add_argument("--role", required=True)
+    takeover.add_argument("--session", required=True)
+    takeover.add_argument("--transport", default="dsh_plugin")
+    retire = session_sub.add_parser("retire", help="End a session: no more delivery, no more claiming")
+    _project_option(retire)
+    retire.add_argument("--session", required=True)
+    retire.add_argument("--reason", default="retired by user")
+
     # project commands
     project = sub.add_parser("project")
     project_sub = project.add_subparsers(dest="project_command", required=True)
@@ -448,6 +461,12 @@ def main():
             result = join_role(state, config, project, args.role, args.session, args.transport)
         elif args.command == "sessions":
             result = client.call("session_list", project=project, role=args.role, include_offline=not args.online)
+        elif args.command == "session":
+            if args.session_command == "takeover":
+                result = client.call("session_takeover", agent=args.role, project=project,
+                                     session_id=args.session, transport=args.transport)
+            else:
+                result = client.call("session_retire", session_id=args.session, reason=args.reason)
         elif args.command == "project":
             result = project_command(args, config, state)
         elif args.command == "role":
@@ -553,4 +572,5 @@ def role_command(args, config, state, project):
             raise ValueError("project_required")
         return Client(state).call("desktop_bind", agent=args.role, project=project, session_id=None)
     raise ValueError("unknown_role_command")
+
 
