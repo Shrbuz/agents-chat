@@ -253,18 +253,31 @@ class AgentChatBridge:
         return False
 
     def _prompt(self, project, bus_role, role, path, event, action):
-        """Keep the wakeup short on purpose.
+        """Keep the wakeup short: a pointer plus a runnable command.
 
         The event already sits in the role's inbox, so repeating its title and
-        acceptance here only burns tokens: the role is told where to look, not
-        what the message says.
+        acceptance only burns tokens. The session name is filled in from the
+        role's bound chat when we know it, so nothing has to be guessed.
         """
         helper = project["helper"]
-        helper_text = (f'python "{helper}" --project "{project["root"]}" '
-                       f'inbox --role {bus_role} --session <填一个固定名字，例如 {bus_role}-1>') if helper else \
-            "用项目内的 agent-chat helper 执行 inbox/claim/result/verify"
-        return (f"Agents Chat 有新消息（{action}，task {str(event.get('task_id'))[:8]}），去收件箱领取。\n"
-                f"python \"{helper}\" --project \"{project['root']}\" inbox --role {bus_role} --session <填一个固定名字，例如 {bus_role}-1>")
+        session = self._bus_session(project, bus_role) or f"{bus_role}-1"
+        head = f"Agents Chat 有新消息（{action}，task {str(event.get('task_id'))[:8]}），去收件箱领取。"
+        if not helper:
+            return head + "\n用项目内的 agent-chat helper 执行 inbox/claim/result/verify。"
+        return (head + "\n"
+                f'python "{helper}" --project "{project["root"]}" inbox '
+                f'--role {bus_role} --session {session}')
+
+    def _bus_session(self, project, bus_role):
+        """The session name this role already uses on the bus, if it has one."""
+        try:
+            sessions = self.store.list_sessions(project=project["id"], role=bus_role)
+        except Exception:
+            return None
+        for item in sessions:
+            if item["id"].startswith("desktop:"):
+                return item["id"].split(":", 1)[1]
+        return None
 
 
 
