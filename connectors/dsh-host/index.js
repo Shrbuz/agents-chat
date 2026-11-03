@@ -68,6 +68,10 @@ function userMessage(text, id) {
  * Sessions this plugin created itself are skipped: the point is to attach to
  * the chat a person is actually looking at.
  */
+// Sessions the user has explicitly ended. The hub refuses to bind them, so the
+// plugin must stop offering them as candidates.
+const retiredSessions = new Set()
+
 function dshSessions() {
   const dir = path.join(os.homedir(), '.dsh', 'storages', 'session_projcache', 'sessions')
   let names = []
@@ -81,6 +85,7 @@ function dshSessions() {
     if (!name.endsWith('.json')) continue
     const id = name.slice(0, -5)
     if (id.startsWith('agents-chat-')) continue
+    if (retiredSessions.has(id)) continue
     const entry = path.join(dir, name)
     try {
       const data = JSON.parse(fs.readFileSync(entry, 'utf8'))
@@ -251,6 +256,13 @@ export function apply(ctx, rawConfig) {
         log('bound ' + target.role + ' (already routed; draining queued tasks)')
         return
       }
+      if (message.includes('session_retired')) {
+        // The user ended this chat; drop it from discovery and try the next one.
+        retiredSessions.add(target.sessionId)
+        log(target.role + ' session ' + target.sessionId + ' is retired; looking for another chat')
+        target.bound = false
+        return
+      }
       log('bind ' + target.role + ' failed: ' + message)
       target.bound = false
     }
@@ -364,6 +376,7 @@ export function apply(ctx, rawConfig) {
 
   refresh(true)
 }
+
 
 
 

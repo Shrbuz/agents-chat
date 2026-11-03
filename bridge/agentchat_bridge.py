@@ -207,7 +207,7 @@ class AgentChatBridge:
                     self._set_cursor(project_id, bus_role, path.name)
                     cursor = path.name
                     continue
-                action = self._action(bus_role, event)
+                action = self._action(project_id, bus_role, event)
                 if action is False:
                     self._set_cursor(project_id, bus_role, path.name)
                     cursor = path.name
@@ -235,8 +235,13 @@ class AgentChatBridge:
             return
         self.store.sync_bus(project["id"], tasks)
 
-    @staticmethod
-    def _action(bus_role, event):
+    def _action(self, project_id, bus_role, event):
+        """Decide whether an event deserves a wakeup at all.
+
+        A wakeup costs one full model turn, so events that need no action stay
+        on disk only: a passed verification, or a cancellation of work nobody
+        had claimed.
+        """
         if not isinstance(event, dict):
             return False
         if event.get("to") != bus_role:
@@ -244,13 +249,21 @@ class AgentChatBridge:
         if event.get("from") == bus_role:
             return False
         kind = event.get("type")
+        if kind == "verify":
+            # Passing needs no action; failing must wake the assignee.
+            return "verify_fail" if (event.get("data") or {}).get("outcome") == "fail" else False
+        if kind == "cancel":
+            # Stop someone who is working; an unclaimed cancel is just a note.
+            return kind if self._task_status(project_id, event.get("task_id")) in ("in_progress", "blocked") else False
         if kind in DELIVER:
             return kind
-        if kind == "verify":
-            outcome = (event.get("data") or {}).get("outcome")
-            if outcome == "fail":
-                return "verify_fail"
         return False
+
+    def _task_status(self, project_id, task_id):
+        for row in self.store.bus_projection(project_id):
+            if row.get("task_id") == task_id:
+                return row.get("status")
+        return None
 
     def _prompt(self, project, bus_role, role, path, event, action):
         """Keep the wakeup short: a pointer plus a runnable command.
@@ -289,6 +302,7 @@ class AgentChatBridge:
             if item["id"].startswith("desktop:"):
                 return item["id"].split(":", 1)[1]
         return None
+
 
 
 

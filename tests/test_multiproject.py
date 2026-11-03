@@ -113,6 +113,18 @@ class HubTests(unittest.TestCase):
         self.assertEqual(callback["state"], "succeeded")
         self.assertEqual(callback["target"], "alpha.backend")
 
+    def test_retired_session_cannot_come_back(self):
+        self.broker.call("session_register", {"project": "alpha", "role": "backend",
+                                              "session": "backend-abc", "transport": "chat"})
+        self.broker.call("session_retire", {"session_id": "backend-abc", "reason": "user ended it"})
+        with self.assertRaisesRegex(ValueError, "session_retired"):
+            self.broker.call("session_register", {"project": "alpha", "role": "backend",
+                                                  "session": "backend-abc", "transport": "chat"})
+        with self.assertRaisesRegex(ValueError, "session_retired"):
+            self.broker.call("session_heartbeat", {"session": "backend-abc"})
+        with self.assertRaisesRegex(ValueError, "session_retired"):
+            self.broker.call("desktop_bind", {"agent": "alpha.backend", "session_id": "backend-abc",
+                                              "transport": "codex_app_tools"})
     def test_peers_block_unlisted_target(self):
         with self.assertRaisesRegex(ValueError, "target_not_allowed"):
             self.broker.call("send", {"sender": "alpha.frontend", "target": "beta.frontend",
@@ -272,3 +284,4 @@ class AgentChatBridgeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+

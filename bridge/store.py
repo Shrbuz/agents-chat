@@ -195,6 +195,10 @@ class Store:
                 db.execute("INSERT INTO sessions(id,project,role,adapter,transport,status,description,metadata,created,last_seen)"
                            " VALUES(?,?,?,?,?,?,?,?,?,?)",
                            (session_id, project, role, adapter, transport, "online", description, metadata, now, now))
+            elif row["retired"]:
+                # A retired session is a tombstone: the user ended it, and neither
+                # the client nor a stray heartbeat may bring it back.
+                raise ValueError("session_retired")
             elif row["project"] != project or row["role"] != role:
                 raise ValueError("session_id_already_bound_to_another_role")
             else:
@@ -208,6 +212,8 @@ class Store:
             row = db.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
             if row is None:
                 raise ValueError("unknown_session")
+            if row["retired"]:
+                raise ValueError("session_retired")
             db.execute("UPDATE sessions SET status='online',last_seen=? WHERE id=?", (now, session_id))
             return self._session_row(db.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone())
 
@@ -390,5 +396,6 @@ class Store:
         query += " ORDER BY priority, sequence"
         with self.db() as db:
             return [dict(row) for row in db.execute(query, values).fetchall()]
+
 
 

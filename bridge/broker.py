@@ -241,7 +241,7 @@ class Broker:
     def public_sessions(self, project=None, role=None, include_offline=True):
         rows = self.store.list_sessions(project=project, role=role, include_offline=include_offline)
         return [{key: row[key] for key in ("id", "project", "role", "adapter", "transport", "status",
-                                            "online", "description", "created", "last_seen", "metadata")}
+                                            "online", "description", "created", "last_seen", "metadata", "retired")}
                 for row in rows]
 
     def call(self, method, p):
@@ -300,6 +300,8 @@ class Broker:
                                  "qoder_native", "dsh_plugin"}}
             if chat is not None and transport not in valid.get(endpoint["adapter"], set()):
                 raise ValueError("unsupported_desktop_transport")
+            if chat and (self.store.session_retired("desktop:" + chat) or self.store.session_retired(chat)):
+                raise ValueError("session_retired: 这个会话已被用户结束，请先接管到另一个会话")
             # Binding a role changes routing, so never redirect already accepted work.
             previous = self.desktop.bindings.get(internal)
             wanted = {"session_id": chat, "transport": transport} if chat else None
@@ -344,7 +346,9 @@ class Broker:
             retire_target = p.get("session_id")
             if not isinstance(retire_target, str) or not retire_target:
                 raise ValueError("invalid_session_id")
-            self.store.retire_session("desktop:" + retire_target, p.get("reason", "retired by user"))
+            # Sessions are stored as bare ids or "desktop:<id>"; retire whichever exists.
+            for candidate in (retire_target, "desktop:" + retire_target):
+                self.store.retire_session(candidate, p.get("reason", "retired by user"))
             for name, binding in list(self.desktop.bindings.items()):
                 if binding.get("session_id") != retire_target:
                     continue
@@ -595,6 +599,10 @@ def serve(state_dir, config_path):
                     time.sleep(.05)
         finally:
             broker.lock.close()
+
+
+
+
 
 
 
