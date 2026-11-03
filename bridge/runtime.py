@@ -63,7 +63,7 @@ def make_prompt(task, endpoint):
     # A bus wakeup is a pointer, not a task: the event is already in the role's
     # inbox, so the long envelope below would only duplicate it in tokens.
     if p.get("kind") == "agent_chat_wakeup":
-        return f"Agents Chat 唤醒（task {str(task['id'])[:8]}）。\n{p.get('prompt', '')}"
+        return p.get("prompt", "")
     # No inbox, old conversation, progress events, or receipts enter this prompt.
     context = "\n".join(p.get("context", []))
     project = endpoint.get("project")
@@ -272,3 +272,4 @@ def run_task(task, endpoint, state_dir, cancelled, stop):
         result["summary"] = result.get("error") or "Runtime produced no result."
     (run_dir / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=2), encoding="utf-8")
     return state, result
+
