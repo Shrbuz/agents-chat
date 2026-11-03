@@ -175,6 +175,29 @@ class DamageTests(unittest.TestCase):
         self.root = Path(self.tmp.name) / "bus"
         self.bus = make_bus(self.root)
 
+    def test_release_hands_the_task_back_with_a_note(self):
+        task_id = request(self.bus)["task"]["task_id"]
+        token = self.bus.submit("claim", "backend", "be-1", task_id=task_id)["task"]["claim"]["token"]
+        out = self.bus.submit("release", "backend", "be-1", task_id=task_id, token=token,
+                              data={"body": "做到一半，换人接手"})
+        self.assertEqual(out["task"]["status"], "pending")
+        self.assertIsNone(out["task"]["claim"])
+        self.assertEqual(out["task"]["last_handover"]["body"], "做到一半，换人接手")
+        # Anyone on that role can pick it up right away, without waiting for a lease.
+        fresh = self.bus.submit("claim", "backend", "be-2", task_id=task_id)
+        self.assertEqual(fresh["task"]["claim"]["session"], "be-2")
+        with self.assertRaises(ValueError):
+            self.bus.submit("result", "backend", "be-1", task_id=task_id, token=token,
+                            data={"body": "late", "evidence": ["x"]})
+
+    def test_only_the_requester_may_reassign(self):
+        task_id = request(self.bus)["task"]["task_id"]
+        self.bus.submit("claim", "backend", "be-1", task_id=task_id)
+        with self.assertRaises(ValueError):
+            self.bus.submit("reassign", "backend", "be-1", task_id=task_id, data={"body": "自己收回"})
+        out = self.bus.submit("reassign", "frontend", "fe-1", task_id=task_id, data={"body": "换人做"})
+        self.assertEqual(out["task"]["status"], "pending")
+        self.assertIsNone(out["task"]["claim"])
     def test_gap_in_sequence_is_reported_not_fatal(self):
         task_id = request(self.bus)["task"]["task_id"]
         token = self.bus.submit("claim", "backend", "be-1", task_id=task_id)["event"]["data"]["token"]
@@ -246,4 +269,5 @@ class ConformanceTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
 

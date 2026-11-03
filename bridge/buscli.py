@@ -58,6 +58,19 @@ def add_commands(sub):
         if name != "renew":
             step.add_argument("--body", required=True)
 
+    release = bus_sub.add_parser("release", help="Hand a claimed task back to the pool")
+    _project_option(release)
+    _token(release)
+    release.add_argument("task_id")
+    release.add_argument("--body", required=True, help="What you did and why you are handing it back")
+
+    reassign = bus_sub.add_parser("reassign", help="Requester pulls a claimed task back to the pool")
+    _project_option(reassign)
+    reassign.add_argument("task_id")
+    reassign.add_argument("--role", required=True)
+    reassign.add_argument("--session", required=True)
+    reassign.add_argument("--body", required=True, help="Why the task is being pulled back")
+
     result = bus_sub.add_parser("result", help="Report a result with evidence")
     _project_option(result)
     _token(result)
@@ -168,6 +181,12 @@ def run(args, root):
     if command == "renew":
         return _summary(bus.submit("renew", args.role, args.session, task_id=args.task_id,
                                    token=args.token))
+    if command == "release":
+        return _summary(bus.submit("release", args.role, args.session, task_id=args.task_id,
+                                   token=args.token, data={"body": args.body}))
+    if command == "reassign":
+        return _summary(bus.submit("reassign", args.role, args.session, task_id=args.task_id,
+                                   data={"body": args.body}))
     if command in ("progress", "blocked"):
         return _summary(bus.submit(command, args.role, args.session, task_id=args.task_id,
                                    token=args.token, data={"body": args.body}))
@@ -224,3 +243,5 @@ def _repair(bus, apply=False):
     return {"applied": bool(apply), "quarantined": moved,
             "would_move": len(skipped) if not apply else len(moved),
             "remaining": [problem for problem in bus.problems if problem["kind"] != "skipped"]}
+
+

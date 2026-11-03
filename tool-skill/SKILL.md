@@ -134,6 +134,19 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 - 用户只在他打开的聊天里看到消息，所以**不需要“静音”机制**，也不要替用户决定该看哪个聊天；
 - 只有真正需要用户拍板（缺信息、缺授权、两个方案要二选一）时，才在用户能看到的聊天里提一个问题。
 
+## 换人接手（release / reassign）
+
+任务做到一半要换会话、换 Agent 时，别硬等租期：
+
+| 谁 | 命令 | 效果 |
+| --- | --- | --- |
+| 正在做的人 | `release --role <r> --session <s> --task <id> --token <t> --body "做到哪、为什么交还"` | 任务回到 `pending`，钥匙清空，备注留给下一个人 |
+| 发起方 | `reassign --role <发起方> --session <s> --task <id> --body "为什么收回"` | 同上，但由发起方强制收回；先被收回的人手里的 token 立即失效 |
+
+接手的人先 `show --task <id>` 看完整事件链（原始需求、之前的进度、交还原因），再 `claim`。
+
+**注意**：交还时务必写清“做到哪、还剩什么”。没有这句，接手的人只能从头猜。
+
 ## 总线读不了怎么办
 
 坏消息不再让全员停摆：读取时会跳过读不懂的文件，并记录问题。发现异常时：
@@ -196,6 +209,7 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 - [references/scheduling.md](references/scheduling.md)：定时与等待
 - [references/tester.md](references/tester.md)：验收角色做法
 - [scripts/agent_chat.py](scripts/agent_chat.py)：没有中枢时可直接运行的文件总线脚本
+
 
 
 

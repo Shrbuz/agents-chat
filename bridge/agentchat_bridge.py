@@ -11,7 +11,7 @@ import time
 
 from .bus import Bus, parse_time, utc_now
 
-DELIVER = {"request", "result", "blocked", "cancel"}
+DELIVER = {"request", "result", "blocked", "cancel", "release", "reassign"}
 WAKEUP_SENDER = "agent-chat"
 
 
@@ -261,7 +261,18 @@ class AgentChatBridge:
         """
         helper = project["helper"]
         session = self._bus_session(project, bus_role) or f"{bus_role}-1"
-        head = f"Agents Chat 有新消息（{action}，task {str(event.get('task_id'))[:8]}），去收件箱领取。"
+        # The action depends on the event: only a request wants a claim, and only
+        # a result wants a verify. Saying "领取" for a result is simply wrong.
+        hint = {
+            "request": "请用 claim 领取并处理，完成后用 result 回传结果。",
+            "result": "查看即可；需要确认时用 verify 通过或驳回。",
+            "verify_fail": "这是被驳回的验收，请处理问题后重新 result。",
+            "blocked": "对方报告了阻塞，查看后决定是继续还是 reassign。",
+            "cancel": "任务已取消，查看即可。",
+            "release": "任务已被交还，等你或其他人重新领取。",
+            "reassign": "任务已被发起方收回，请停止手上的工作。",
+        }.get(action, "去收件箱查看。")
+        head = f"Agents Chat 收件箱有你的新消息（{action}，task {str(event.get('task_id'))[:8]}）。{hint}"
         if not helper:
             return head + "\n用项目内的 agent-chat helper 执行 inbox/claim/result/verify。"
         return (head + "\n"
@@ -278,6 +289,7 @@ class AgentChatBridge:
             if item["id"].startswith("desktop:"):
                 return item["id"].split(":", 1)[1]
         return None
+
 
 
 

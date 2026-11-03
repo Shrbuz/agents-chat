@@ -291,6 +291,14 @@ class Bus:
             task["claim"] = None
             if kind == "result":
                 task["latest_result"] = data
+            if kind == "blocked":
+                task["last_handover"] = data
+        elif kind in ("release", "reassign"):
+            # Work goes back to the pool with the reason attached, so whoever picks
+            # it up next starts from what the previous session wrote down.
+            task["status"] = "pending"
+            task["claim"] = None
+            task["last_handover"] = data
         elif kind == "verify":
             task["status"] = "closed" if data["outcome"] == "pass" else "pending"
             task["verification"] = data
@@ -358,23 +366,32 @@ class Bus:
                         raise ValueError("Task already has a live claim; use renew in its owning session.")
                     data = {"token": str(uuid.uuid4()), "lease_seconds": lease_seconds,
                             "expires_at": stamp(now + timedelta(seconds=lease_seconds))}
-                elif kind in ("renew", "progress", "blocked", "result"):
-                    if role != task["assignee"] or not claim or claim["session"] != session or claim["token"] != token:
-                        raise ValueError("Claim is missing, replaced, or belongs to another session.")
-                    if parse_time(claim["expires_at"]) <= now:
-                        # Expiry only means someone else *may* take over. As long as the
-                        # same session still holds the token, nobody has, so a late
-                        # renewal or the final result is still that session's work —
-                        # rejecting it would punish a long task for being long.
+                elif kind in ("renew", "progress", "blocked", "result", "release", "reassign"):
+                    if kind == "reassign":
+                        # Only the requester can pull work back; no lease token needed.
+                        if role != task["requester"]:
+                            raise ValueError("Only the requesting role may reassign a task.")
                         if task["status"] not in ("in_progress", "blocked"):
-                            raise ValueError("Claim expired; reconcile work and claim again for a new token.")
-                        data["late"] = True
-                    if kind == "renew":
-                        data = {"expires_at": stamp(now + timedelta(seconds=claim["lease_seconds"]))}
-                    else:
+                            raise ValueError("Only claimed work can be reassigned.")
                         text_field(data, "body")
-                        if kind == "result":
-                            list_field(data, "evidence")
+                        target = task["assignee"]
+                    else:
+                        if role != task["assignee"] or not claim or claim["session"] != session or claim["token"] != token:
+                            raise ValueError("Claim is missing, replaced, or belongs to another session.")
+                        if parse_time(claim["expires_at"]) <= now:
+                            # Expiry only means someone else *may* take over. As long as the
+                            # same session still holds the token, nobody has, so a late
+                            # renewal or the final result is still that session's work —
+                            # rejecting it would punish a long task for being long.
+                            if task["status"] not in ("in_progress", "blocked"):
+                                raise ValueError("Claim expired; reconcile work and claim again for a new token.")
+                            data["late"] = True
+                        if kind == "renew":
+                            data = {"expires_at": stamp(now + timedelta(seconds=claim["lease_seconds"]))}
+                        else:
+                            text_field(data, "body")
+                            if kind == "result":
+                                list_field(data, "evidence")
                 elif kind in ("verify", "cancel"):
                     if role != task["requester"]:
                         raise ValueError("Only the original requesting role may verify or cancel.")

@@ -329,45 +329,73 @@ class Bus:
             yield
 
     def load(self):
+        """Replay every event; a damaged message is reported, not guessed at.
+
+        One malformed file used to make the whole bus unreadable for every role.
+        Bad files are skipped and listed in ``self.problems`` instead.
+        """
         events = []
         message_ids, sequences = set(), set()
+        self.problems = []
         for folder in self.root.glob("*_msg"):
             if folder.resolve() not in self.mailboxes.values() and any(folder.glob("*.json")):
                 raise ValueError("History found in an unconfigured mailbox; restore/synchronize role configuration before continuing.")
         for recipient, folder in self.mailboxes.items():
             for path in folder.glob("*.json"):
-                event = read_json(path)
-                if not isinstance(event, dict):
-                    raise ValueError(f"Message must be a JSON object: {path}")
-                if event.get("schema_version") != 1 or event.get("project_id") != self.project_id:
-                    raise ValueError(f"Foreign or unsupported message: {path}")
-                message_id = uuid_text(event["message_id"])
-                uuid_text(event["task_id"])
-                seq = event["sequence"]
-                if not isinstance(seq, int) or isinstance(seq, bool) or seq <= 0:
-                    raise ValueError(f"Invalid event sequence: {path}")
-                if event.get("to") != recipient or event.get("from") not in self.mailboxes:
-                    raise ValueError(f"Invalid message routing: {path}")
-                if path.name != f"{seq:08d}_{message_id}.json":
-                    raise ValueError(f"Message filename does not match event: {path}")
-                parse_time(event["created_at"])
-                if message_id in message_ids or seq in sequences:
-                    raise ValueError("Duplicate event identity/sequence; inspect the bus before continuing.")
-                message_ids.add(message_id)
-                sequences.add(seq)
-                events.append(event)
+                event = self._read_event(path, recipient, message_ids, sequences)
+                if event is not None:
+                    events.append(event)
         events.sort(key=lambda e: e["sequence"])
         tasks = {}
-        for expected_sequence, event in enumerate(events, 1):
-            if event["sequence"] != expected_sequence:
-                raise ValueError("Event sequence has a gap; restore missing messages before continuing.")
+        previous_sequence = 0
+        for event in events:
+            if event["sequence"] != previous_sequence + 1:
+                self._problem(event.get("_path"), "sequence_gap",
+                              "序号不连续：上一条是 %d，这条是 %d" % (previous_sequence, event["sequence"]))
+            previous_sequence = event["sequence"]
             previous = tasks.get(event["task_id"])
             expected_reply = previous["last_message_id"] if previous else None
             if event.get("in_reply_to") != expected_reply:
-                raise ValueError("Event history has a broken reply chain.")
-            self.apply(tasks, event)
+                self._problem(event.get("_path"), "broken_chain",
+                              "回复链对不上：这条说回复 %s，按顺序应是 %s" % (event.get("in_reply_to"), expected_reply))
+            try:
+                self.apply(tasks, event)
+            except (ValueError, KeyError) as exc:
+                self._problem(event.get("_path"), "skipped_event",
+                              "seq %s: %s" % (event.get("sequence"), exc))
+        for event in events:
+            event.pop("_path", None)
         return events, tasks
 
+    def _problem(self, path, kind, detail):
+        self.problems.append({"file": str(path) if path else "", "kind": kind, "detail": detail})
+
+    def _read_event(self, path, recipient, message_ids, sequences):
+        try:
+            event = read_json(path)
+            if not isinstance(event, dict):
+                raise ValueError("不是一个 JSON 对象")
+            if event.get("schema_version") != 1 or event.get("project_id") != self.project_id:
+                raise ValueError("不是本项目的消息，或协议版本不符")
+            message_id = uuid_text(event["message_id"])
+            uuid_text(event["task_id"])
+            seq = event["sequence"]
+            if not isinstance(seq, int) or isinstance(seq, bool) or seq <= 0:
+                raise ValueError("序号无效")
+            if event.get("to") != recipient or event.get("from") not in self.mailboxes:
+                raise ValueError("收发角色不在配置里")
+            if path.name != f"{seq:08d}_{message_id}.json":
+                raise ValueError("文件名与内容里的序号/消息ID不一致（请用 helper 写消息，不要手写文件名）")
+            parse_time(event["created_at"])
+            if message_id in message_ids or seq in sequences:
+                raise ValueError("消息ID或序号重复")
+        except (OSError, ValueError, KeyError) as exc:
+            self._problem(path, "skipped", str(exc))
+            return None
+        message_ids.add(message_id)
+        sequences.add(seq)
+        event["_path"] = str(path)
+        return event
     @staticmethod
     def apply(tasks, event):
         kind, task_id, data = event["type"], event["task_id"], event["data"]
@@ -395,6 +423,13 @@ class Bus:
             task["claim"] = None
             if kind == "result":
                 task["latest_result"] = data
+            if kind == "blocked":
+                task["last_handover"] = data
+        elif kind in ("release", "reassign"):
+            task["status"] = "pending"
+            task["claim"] = None
+            task["last_handover"] = data
+
         elif kind == "verify":
             task["status"] = "closed" if data["outcome"] == "pass" else "pending"
             task["verification"] = data
@@ -455,11 +490,25 @@ class Bus:
                         raise ValueError("Task already has a live claim; use renew in its owning session.")
                     data = {"token": str(uuid.uuid4()), "lease_seconds": lease_seconds,
                             "expires_at": stamp(now + timedelta(seconds=lease_seconds))}
-                elif kind in ("renew", "progress", "blocked", "result"):
-                    if role != task["assignee"] or not claim or claim["session"] != session or claim["token"] != token:
+                elif kind in ("renew", "progress", "blocked", "result", "release", "reassign"):
+                    if kind == "reassign":
+                        if role != task["requester"]:
+                            raise ValueError("Only the requesting role may reassign a task.")
+                        if task["status"] not in ("in_progress", "blocked"):
+                            raise ValueError("Only claimed work can be reassigned.")
+                        text_field(data, "body")
+                        target = task["assignee"]
+                        claim = None
+                    elif role != task["assignee"] or not claim or claim["session"] != session or claim["token"] != token:
                         raise ValueError("Claim is missing, replaced, or belongs to another session.")
-                    if parse_time(claim["expires_at"]) <= now:
-                        raise ValueError("Claim expired; reconcile work and claim again for a new token.")
+
+                    if kind != "reassign":
+                        if parse_time(claim["expires_at"]) <= now:
+                            # Same session, same token, nobody took over: a late
+                            # handover or result is that session's work, not a conflict.
+                            if task["status"] not in ("in_progress", "blocked"):
+                                raise ValueError("Claim expired; reconcile work and claim again for a new token.")
+                            data["late"] = True
                     if kind == "renew":
                         data = {"expires_at": stamp(now + timedelta(seconds=claim["lease_seconds"]))}
                     else:
@@ -618,7 +667,7 @@ def build_parser():
     send.add_argument("--session", required=True)
     send.add_argument("--data-file", required=True)
     send.add_argument("--message-id")
-    for command in ("claim", "renew", "progress", "blocked", "result", "verify", "cancel"):
+    for command in ("claim", "renew", "progress", "blocked", "result", "verify", "cancel", "release", "reassign"):
         sub = commands.add_parser(command)
         sub.add_argument("--role", required=True)
         sub.add_argument("--session", required=True)
@@ -626,9 +675,9 @@ def build_parser():
         sub.add_argument("--message-id")
         if command == "claim":
             sub.add_argument("--lease-seconds", type=int)
-        if command in ("renew", "progress", "blocked", "result"):
+        if command in ("renew", "progress", "blocked", "result", "release"):
             sub.add_argument("--token", required=True)
-        if command in ("progress", "blocked", "result", "verify", "cancel"):
+        if command in ("progress", "blocked", "result", "verify", "cancel", "release", "reassign"):
             content = sub.add_mutually_exclusive_group(required=True)
             content.add_argument("--body")
             content.add_argument("--data-file")
@@ -715,3 +764,6 @@ def main():
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
