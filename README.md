@@ -1,84 +1,71 @@
 # Agents Chat
 
+**简体中文** | [English](README.en.md)
+
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+![Version](https://img.shields.io/badge/version-0.6.8-blue)
 
-## 0.6.8 有什么不同
+让同一台机器上的多个 Agent 聊天互相派活、自动回传结果并验收。项目里的角色（`leader`、`frontend`、`tester`……）各自是一个协作席位，任务按角色路由，不需要人工在两个聊天窗口之间复制粘贴。
 
-- **DSH 聊天变成一等公民**：新增 `dsh_plugin` 桌面传输，任务投进你已经打开的 DSH 聊天，不再为每条任务新起进程；插件按 adapter 自动发现角色，自动绑定到你自己的那个聊天（如 `CMS_Tester`），中枢没跑时自己拉起。
-- **唤醒可靠**：每个角色独立游标，一个角色卡住不再让整个项目停止扫描；改绑聊天时过期唤醒自动作废，不再互相卡死。
-- **省 token**：总线唤醒只指路，不搬运任务正文（745 → 283 字符），Qoder 连接器的汇报尾巴 ~600 → ~120 字符。
-- **看得清**：托盘状态窗口改成带列头的表格，绑定列显示真实聊天名。
-- **不靠开机自启**：用到 Agents Chat 的会话自己拉起后台；项目以前用过、这次没提，Agent 会在做完主线后问一次要不要启动。
-- **一条坏消息不再拖垮全员**：写错的消息会被跳过并记录，不再让整个总线读不出来；`bus validate` 查、`bus repair --apply` 隔离。
-- **长任务不会白干**：租期过后，仍由原会话完成的活照收（标记为迟交）；桌面会话的租期由中枢自动续，不会中途被抢走。
-- **不再掐断正在干活的聊天**：唤醒超时只放弃等待，不打断会话；超时上限 30 分钟。
-- **消息文件不再存两份正文**：`intent` 只存正文的 sha256，1500 字的请求从 ~8.7KB 降到 ~2.3KB。
-- **放不进去的事件不再拖垮总线**：未知类型、找不到上游 request 都只记一条问题，其余照常；报错会指明 seq、类型和常见原因。
-- **弃用 dsh 的子进程模式**：dsh 角色未绑定插件时直接报 `dsh_requires_plugin`，不再新起 headless 进程、也不再需要那个 key。
-- **换人接手有正式命令**：`release`（做的人交还，带回交接说明）和 `reassign`（发起方强制收回），接手方 `claim` 即刻生效，不用等租期。
-- **技能脚本也抗坏了**：Agent 实际用的 `agent_chat.py` 同样会跳过读不懂的消息，一个坏文件不再让所有人停摆。
-- **唤醒按类型给动作**：request 说“领取并处理”，result 说“查看即可”，reassign 说“停止手上工作”，不再一律“领取”。
+- **本地优先**：中枢只监听 `127.0.0.1`，数据存在本地 SQLite 与 JSON 文件里
+- **按需启动**：不设开机自启；用到它的会话自己拉起后台
+- **看得见**：任务可以投进你正在用的 Qoder / DSH 聊天，过程和结果都在你眼前
 
-## 一行安装（Windows 10/11）
+---
 
-在 PowerShell 中执行：
+## 目录
+
+- [快速开始](#快速开始)
+- [核心概念](#核心概念)
+- [两种协作模式](#两种协作模式)
+- [文件总线](#文件总线)
+- [DSH 接入](#dsh-接入)
+- [桌面聊天绑定](#桌面聊天绑定)
+- [CLI 速查](#cli-速查)
+- [MCP](#mcp)
+- [托盘与便携版](#托盘与便携版)
+- [配置文件与数据](#配置文件与数据)
+- [升级与卸载](#升级与卸载)
+- [安全边界与已知限制](#安全边界与已知限制)
+- [从源码开发](#从源码开发)
+- [许可证](#许可证)
+
+---
+
+## 快速开始
+
+### Windows 10 / 11
+
+PowerShell：
 
 ```powershell
 irm https://github.com/Shrbuz/agents-chat/releases/latest/download/install.ps1 | iex
 ```
 
-CMD 里等价的一行：
+CMD 等价写法：
 
 ```bat
 powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/Shrbuz/agents-chat/releases/latest/download/install.ps1 | iex"
 ```
 
-安装器会下载自包含的便携包，安装到 `%LOCALAPPDATA%\Programs\AgentsChat`，并把一个用户级技能装到
-Codex、Qoder、DSH 的技能目录（其他客户端把 `tool-skill/` 整个复制到其技能根目录即可）：
+安装器会：
 
-- `agents-chat-desktop`：项目/角色/会话、`setup`、`send`、`join`、桌面唤醒，以及文件总线的
-  `bus` 子命令；`references/` 里带完整的协议、交接和命令说明，`scripts/agent_chat.py` 是
-  没有中枢时可直接运行的文件总线客户端。
-
-一个技能同时覆盖两种模式：项目已有 `agent_chat` 总线时用它派活、中枢只负责唤醒；没有总线时
-由中枢队列派活。同一条请求只走一条链路，不存在需要用户裁决的“两套系统”。
-安装器创建开始菜单/桌面入口并启动托盘，不需要管理员权限，不需要预装 Python、pip、Node（Codex/Qoder 自身仍由你安装）。
+- 下载自包含便携包并安装到 `%LOCALAPPDATA%\Programs\AgentsChat`；
+- 把 `agents-chat-desktop` 技能写进 Codex / Qoder / DSH 的用户级技能目录；
+- 创建开始菜单与桌面入口；
+- 校验 Release 的 SHA-256，保留已有的 `config.json` 与数据；
+- 不需要管理员权限，不需要预装 Python、pip、Node（Codex / Qoder 自身仍需你安装）。
 
 装好后，在一个**新开的项目聊天**里说：
 
-> 用 agents-chat-desktop 技能把当前项目接成多角色桌面聊天协作，角色你按项目定。Codex / Qoder 的聊天用 join 绑定；DSH 的聊天由宿主插件自动绑定、不需要 join。最后告诉我每个聊天该说什么。
+> 用 agents-chat-desktop 技能把当前项目接成多角色桌面聊天协作，角色按项目定。Codex / Qoder 的聊天用 join 绑定；DSH 的聊天由宿主插件自动绑定、不需要 join。最后告诉我每个聊天该说什么。
 
-Agent 会完成或指导完成项目、角色、项目入口、MCP 配置和桌面聊天绑定。安装器会打印这句话。
-已有聊天可能缓存旧技能，需要新开一个会话才会加载最新版本。当前安装器写入 Codex、Qoder、DSH 三个用户级技能目录；其他客户端可把 `tool-skill/SKILL.md` 和 `tool-skill/agent-chat/` 放到其技能根目录。
+已有聊天会缓存旧技能，需要新开会话才会加载最新版本。
 
-技能里的 `scripts/agent_chat.py` 需要 Python，而安装本身不需要。安装器会挑一个可用的解释器（便携包自带的 Python 优先，其次系统 `python`，再次 `py` 启动器），把路径写进技能目录的 `runtime.json`；技能会优先读这个文件。三者都没有时安装日志会明确警告“脚本已复制但不可执行”，不会静默通过。
+### macOS / Linux
 
-安装器会校验 Release 的 SHA-256，保留已有的 `config.json`/`data`，不需要管理员权限。如果检测到 Qoder，安装器会写入它的路径并创建 `Qoder (Agents Chat)` 快捷方式；Qoder 必须从这个快捷方式启动才能加载原生扩展。未自动检测到时用：
-
-```powershell
-.\install.ps1 -QoderPath "C:\Program Files\Qoder\Qoder.exe"
-```
-
-卸载：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\AgentsChat\uninstall.ps1"
-```
-
-默认保留配置和数据；加 `-RemoveData` 一并删除，`-KeepSkill` 保留用户级技能。
-
-两个脚本都支持 `-DryRun`，只打印将要执行的动作而不写入任何文件，建议先跑一遍：
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\AgentsChat\uninstall.ps1" -DryRun
-```
-
-安装器和卸载器都会校验目标目录：空路径、盘符根、用户目录及其上级目录一律拒绝；卸载只清理确实包含本程序文件的目录。
-
-## macOS / Linux
-
-macOS 与 Linux 目前没有独立的便携包，从源码目录运行安装脚本：
+目前没有独立便携包，从源码目录运行：
 
 ```bash
 sh install.sh            # 默认装到 ~/.local/opt/agents-chat
@@ -86,44 +73,20 @@ sh install.sh --dry-run  # 只打印将要执行的动作
 sh install.sh --uninstall
 ```
 
-- 需要 `python3` ≥ 3.11（macOS 可用 `xcode-select --install`）。
-- 只装**一份**到 `~/.local/opt/agents-chat`，再把这份链接进 `~/.codex/skills`、`~/.qoder/skills`、`~/.agents/skills`、`~/.claude/skills`（只链接已存在的目录；真实目录不覆盖，已指向别处的链接不动）。
-- 升级只需替换 `~/.local/opt/agents-chat/skill`，所有客户端立即生效；如果环境把 `ln -s` 退化成复制，脚本会显式告警。
-- macOS 默认装 launchd 常驻（`~/Library/LaunchAgents/com.agents-chat.hub.plist`），`--no-service` 可跳过；Linux 会打印 systemd 用户单元示例。
-- **限制**：无托盘、无桌面聊天绑定，角色以 CLI 任务执行——协作本身成立，但看不到消息投递进你正在用的聊天窗口。
+- 需要 `python3` ≥ 3.11；
+- 只装一份，再链接进 `~/.codex/skills`、`~/.qoder/skills`、`~/.agents/skills`、`~/.claude/skills`（只链接已存在的目录，不覆盖真实目录）；
+- macOS 默认安装 launchd 常驻，`--no-service` 可跳过；Linux 会打印 systemd 用户单元示例；
+- **限制**：无托盘、无桌面聊天绑定，角色以 CLI 任务执行。协作本身成立，但看不到消息投进你正在用的聊天窗口。
 
-## 文件总线协议（0.6）
+---
 
-项目关联了 `agent_chat` 总线后，中枢**原生实现**同一套协议：事件是只增不改的 JSON 文件，`_state/bus.lock` 上加 OS 文件锁、写入走临时文件 + fsync + 原子改名，任务状态由事件重放得出。
+## 核心概念
 
-```powershell
-agents-chat bus request --from backend --to frontend --session be-1 `
-    --title "登录接口" --body "详情" --acceptance "返回 200" --priority P1
-agents-chat bus claim <task-id>   --role frontend --session fe-1     # 返回租约 token
-agents-chat bus result <task-id>  --role frontend --session fe-1 --token <token> --body "已完成" --evidence "测试通过"
-agents-chat bus verify <task-id>  --role backend  --session be-1 --outcome pass --body "复测通过"
-```
-
-- 状态机：`pending → in_progress → resolved → closed`；`verify --outcome fail` 回落 `pending`，`blocked` 释放领取。
-- 租约过期后旧 token 失效，另一个会话可以重新领取并拿到新 token。
-- 请求必须带 `--acceptance`，结果必须带 `--evidence`；`bus inbox` 按角色+会话记录已读，换会话不会漏消息。
-- 外部 Agent 仍可直接读写这些文件（随包安装的 `agent-chat` 技能就是这样一个客户端），中枢只做投影，不另存一份任务状态。
-
-从源码安装/开发：
-
-```powershell
-python install.py
-```
-
-## 0.5：多项目、多角色、多会话的本机协作中枢
-
-Agents Chat 是一个常驻 Windows 托盘的本地后台。它把**项目**、**角色**、**会话**分开：
-
-- **项目**：一个目录及其协作上下文。一个后台可以同时管理多个项目。
-- **角色**：项目里的协作席位，地址是 `<项目>.<角色>`，例如 `alpha.backend`。角色可以由 Codex、Qoder、CodeBuddy 或同一 Agent 的另一个会话承担。
-- **会话**：某个角色的一次具体对话/进程。会话通过 CLI 或 MCP 注册，桌面聊天可以额外绑定为投递目标。
-
-任务按角色路由。发起角色把任务交给某个角色，目标角色的会话执行，结果自动回到发起角色的收件箱。跨项目也只是换一个完整地址，不需要另开后台。这就是“同一 Agent 多会话”和“不同 Agent 多会话”共用的协作平面。
+| 概念 | 含义 |
+| --- | --- |
+| **项目** | 一个目录及其协作上下文。一个后台可同时管理多个项目。 |
+| **角色** | 项目里的协作席位，地址为 `<项目>.<角色>`，例如 `alpha.backend`。 |
+| **会话** | 某个角色的一次具体对话或进程。桌面聊天可以额外绑定为投递目标。 |
 
 ```text
 alpha.frontend ──send──▶ alpha.backend
@@ -133,160 +96,188 @@ alpha.frontend ──send──▶ alpha.backend
 beta.architect ──send alpha.backend──▶ alpha.backend   (跨项目)
 ```
 
-角色之间不需要一个额外的“总调度 Agent”。每个会话按自己的角色提示决定下一步派发给谁；后台只做持久化、排队、投递和等待，空闲时不调用模型。
+角色之间不需要一个额外的“总调度 Agent”。每个会话按自己的角色提示决定下一步派给谁；后台只做持久化、排队、投递和等待，空闲时不调用模型。
 
-## 托盘与便携版
+---
 
-- `AgentsChat.exe`：系统托盘宿主。启动后自动拉起本地后台；双击托盘图标或运行 `AgentsChat.exe ui` 打开状态窗口。窗口只用于查看项目/角色/队列和启停，不需要手工配置。
-- `AgentsChat.Cli.exe`：Agent 和脚本使用的命令入口；同一目录也提供 stdio MCP。
-- 发布版用上面的 `install.ps1` 一行安装/更新；从源码开发时仍可双击 `Install.cmd` 或运行 `python install.py`。
-- 便携版由 `python build_portable.py` 生成：`dist/AgentsChat-Portable/` 和 zip，自带官方 Python 嵌入式运行时（约 24 MB），无需安装 Python/pip，解压即用。Codex/Qoder 的 CLI 任务仍需要对应厂商程序；Qoder 原生桌面扩展还需要本机 Qoder 与 Node。
+## 两种协作模式
 
-托盘只做三件事：启动/停止后台、展示状态、打开配置/数据目录。真正的会话搭建和配置由 Agent 通过 CLI 完成。本机空闲实测约：托盘 41 MB、后台 29 MB，空闲时不调用模型、不轮询队列。
+同一条请求只走一条链路，不存在需要用户裁决的“两套系统”：
 
-## Agent 自助配置（推荐入口）
+| 项目里是否已有 `agent_chat/` 总线 | 派活方式 | 中枢的作用 |
+| --- | --- | --- |
+| 有 | 用文件总线（`claim` / `result` / `verify`） | 新事件到达时唤醒对应角色的会话 |
+| 没有 | 用中枢队列（`send` / `wait`） | 直接投递给目标角色 |
 
-Agent 在项目目录运行：
+技能会自动判断项目现状并选一条，不会来回问用户。
+
+---
+
+## 文件总线
+
+项目关联 `agent_chat` 总线后，中枢**原生实现**同一套协议：事件是只增不改的 JSON 文件，`_state/bus.lock` 上加 OS 文件锁，写入走临时文件 + fsync + 原子改名，任务状态由事件重放得出。
 
 ```powershell
-# 找到 CLI（安装版或便携版）
 $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 
-# 一次创建项目和角色；角色格式 role[:adapter[:description]]
-& $cli --config <后台配置> setup --root E:\work\alpha --project alpha `
-    --role backend:codex:"API 与数据" --role frontend:qoder:"界面与交互"
+# 派活
+& $cli --project alpha bus request --from backend --to frontend --session be-1 `
+    --title "登录接口" --body "详情" --acceptance "返回 200" --priority P1
 
-# 之后单独加角色
-& $cli --project alpha role add --role tester --adapter codex --description "生产验收"
+# 领取（返回租约 token）
+& $cli --project alpha bus claim <task-id> --role frontend --session fe-1
 
-# 打印某个角色的启动提示，交给对应会话
-& $cli --project alpha role prompt --role backend
+# 交结果 / 验收
+& $cli --project alpha bus result <task-id> --role frontend --session fe-1 --token <token> `
+    --body "已完成" --evidence "测试通过"
+& $cli --project alpha bus verify <task-id> --role backend --session be-1 --outcome pass --body "复测通过"
 ```
 
-`setup` 会：
+### 换人接手
 
-- 在中央配置里创建项目和角色；
-- 写 `<项目>/.agents-chat/project.json`，让以后任何会话在项目目录内自动发现后台、项目和默认角色；
-- 写 `<项目>/.agents-chat/prompts/<角色>.md`；
-- 在项目 `AGENTS.md` 中加入一段带边界标记的启动说明；
-- 生成 `.bridge/mcp-<项目>-<角色>.local.json`；
-- 如果项目已有 `agent_chat/project.json`，自动关联该文件总线，只做“新事件唤醒”，不改变它的 claim/verify 协议。
+| 谁 | 命令 | 效果 |
+| --- | --- | --- |
+| 正在做的人 | `bus release <task-id> --role <r> --session <s> --token <t> --body "做到哪、为什么交还"` | 任务回到 `pending`，钥匙清空，交接说明留给下一个人 |
+| 发起方 | `bus reassign <task-id> --role <发起方> --session <s> --body "为什么收回"` | 强制收回；原会话的 token 立即失效 |
 
-重复运行 setup 是幂等的；已有角色默认保留。新增角色后如果后台在运行，默认自动重启加载配置（`--no-restart` 可关闭）。
+接手的人先 `bus show <task-id>` 看完整事件链，再 `claim` 即刻生效。
 
-## 会话注册与收件箱
+### 坏消息不再拖垮全员
 
-每个会话启动时生成一个稳定 ID 并注册：
+读不懂的消息会被**跳过并记录**，其余消息照常：
 
 ```powershell
-& $cli --project alpha register --role backend --session backend-<UUID> --transport chat
-& $cli --project alpha inbox --role backend
+& $cli --project alpha bus validate          # 列出被跳过或有问题的消息
+& $cli --project alpha bus repair            # 预览要隔离哪些文件
+& $cli --project alpha bus repair --apply    # 移到 _quarantine-<时间>/，不删除
 ```
 
-注册表示“这个角色当前有会话在线”，用于状态窗口、审计和同角色多会话的可见性；任务投递仍按角色进行，同一角色同一时间只有一个执行者。`inbox` 不会自动确认；处理完用返回的 `next_cursor` 确认：
+### 规则摘要
 
-```powershell
-& $cli --project alpha ack --role backend --cursor 3
-```
+- 状态机：`pending → in_progress → resolved → closed`；`verify --outcome fail` 回落 `pending`。
+- 租约默认 30 分钟；桌面会话由中枢自动续期，过期后同一会话的迟交结果仍然受理。
+- 请求必须带 `--acceptance`，结果必须带 `--evidence`；收件箱按「角色 + 会话」记录已读。
+- 写消息请用 CLI 或技能脚本，不要手写文件名——`<序号:08位>_<message_id>.json` 最容易写坏。
 
-## 派发任务与回结果
+---
 
-```powershell
-& $cli send --from alpha.frontend --to alpha.backend `
-    --key login-api-v1 --timeout 900 --file .\request.md
+## DSH 接入
 
-# 结果自动写回 alpha.frontend 的 inbox；需要在这个会话里等一次时：
-& $cli wait <task_id> --timeout 960
-```
+### 推荐：`dsh_plugin`
 
-- `--to` 可以写角色名（全局唯一时）或完整 `项目.角色`。
-- 同一 `--key` 只对应同一请求；重试时复用，内容变了必须换 key。
-- `reply_mode=run` 会在发送方角色配置了运行时的情况下，额外启动一次最多 800 字的本地结果处理任务；默认 `mailbox` 不唤醒发送方模型。
-- 角色可配置 `peers` 白名单；未列出的目标会被拒绝。跨项目默认允许，但角色提示要求用户明确授权。
+插件跑在 DSH 宿主里，把任务**作为普通用户消息**送进你已经打开的那个会话，不另起进程。
 
-## 同一 Agent 的多会话
+- 角色来源：按 adapter 自动发现，`adapter=dsh` 的角色由插件接管，新增角色不用改插件配置；
+- 绑定会话：读 DSH 会话缓存，按标题匹配角色名（`CMS_Tester` → `tester`）；
+- 会话名显示：读 DSH 会话标题，取不到时回落为会话 ID；
+- 中枢没跑：插件自己执行 `start` 拉起。
 
-同一 Agent 可以在不同项目或同一项目里占多个角色。例如：
+配置示例：`connectors/dsh-host/cordis.patch.yml.example`。一个插件实例可服务多个角色。
 
-- `alpha.architect` 和 `alpha.builder` 都是 Codex，各自一个会话；
-- `beta.tester` 是另一个 Codex 会话，只做验收；
-- `alpha.frontend` 是 Qoder。
+### 已弃用：`independent_cli_task`
 
-这些角色互相看不到对方的历史，只看到派发的短任务和结果摘要，因此不会把彼此的上下文混在一起。需要领取/租约/验收语义时，用技能里的 `bus` 子命令（中枢原生实现同一协议）；总线出现新 request/result 时中枢会唤醒对应角色会话。
+旧模式会为每条任务新起一个 `dsh headless` 进程，既不在你的聊天里，也读不到 GUI 凭据。现在 dsh 角色未绑定插件时直接报 `dsh_requires_plugin`，不再新起进程。
 
-## 桌面聊天绑定（可选）
+---
+
+## 桌面聊天绑定
 
 默认角色是可独立运行的 CLI 任务。若要把已有桌面聊天作为投递目标：
 
-- Codex：使用宿主提供的 app-tools MCP，`role bind --transport codex_app_tools`；一个角色一个连接器，支持同一 Codex 的多个聊天分别承担不同角色。
-- Qoder：使用普通原生开发扩展 `agents-chat.native`，`role bind --transport qoder_native`；不操作输入框、不切聊天、不抢焦点。扩展离线时明确报离线，不退回 UI 自动化。
-- Qoder 输入框自动操作始终禁用；UIA 仅作为历史兼容路径，不作为默认。
-- 绑定是显式路由；绑定角色有排队/执行中任务时拒绝改绑，绝不静默退回 CLI。
+- **Codex**：宿主 app-tools MCP，`role bind --transport codex_app_tools`；一个角色一个连接器。
+- **Qoder**：原生开发扩展 `agents-chat.native`，`role bind --transport qoder_native`；不操作输入框、不切聊天、不抢焦点。
+- **DSH**：由宿主插件自动绑定，不需要 `join`。
+- 绑定是显式路由；绑定角色有排队/执行中任务时拒绝改绑，不会静默退回 CLI。
 
-## 命令速查
+---
+
+## CLI 速查
 
 ```text
-status / roles / targets / health / stop / restart
+start / serve / stop / restart / health / doctor
+status / roles / targets / sessions
 setup --root DIR [--project ID] [--role role:adapter[:desc]]...
 project add|list|remove
 role add|list|remove|prompt|bind|unbind
-register / heartbeat / sessions / join
+register / heartbeat / join / native-result
 send / wait / task / cancel / inbox / ack
+bus request|claim|renew|progress|blocked|result|verify|cancel|release|reassign|inbox|mark-read|status|show|validate|repair|paths
 mcp --agent ROLE [--project ID]
-doctor --config FILE
 ```
 
-所有命令支持 `--config`、`--state` 和 `--project`；在项目目录内可以省略，由 `.agents-chat/project.json` 自动解析。
+所有命令支持 `--config`、`--state` 与 `--project`；在项目目录内可以省略，由 `.agents-chat/project.json` 自动解析。
+
+---
 
 ## MCP
 
-stdio MCP 暴露 9 个工具：`bridge_send`、`bridge_wait`、`bridge_task`、`bridge_inbox`、`bridge_ack`、`bridge_targets`、`bridge_cancel`、`bridge_register`、`bridge_roles`。详细配置见 [INTEGRATION.md](INTEGRATION.md)。
+stdio MCP 暴露 9 个工具：`bridge_send`、`bridge_wait`、`bridge_task`、`bridge_inbox`、`bridge_ack`、`bridge_targets`、`bridge_cancel`、`bridge_register`、`bridge_roles`。配置方式见 [INTEGRATION.md](INTEGRATION.md)。
 
-## 状态与边界
+---
 
-- 后台只监听 `127.0.0.1` 随机端口，需本机 bearer；拒绝浏览器 Origin 和外部 Host。信任边界是同一个操作系统用户，不是多租户安全产品。
-- 一个状态目录（`data/` 或 `.bridge/`）只允许一个后台实例；SQLite WAL 保存任务、结果、会话和游标。
-- 任务不能指定任意可执行程序或工作目录；这些由受信任的角色配置决定。
-- `succeeded` 只表示 Runtime 正常结束，不等于业务验收；仍要检查证据和副作用。
-- 模型仍调用厂商在线服务，不是离线模型；空闲等待、去重、邮箱和路由由本地代码完成。
-- 桌面绑定依赖厂商版本相关入口；更新桌面后可能需要重新绑定或重新启动 Qoder 原生连接。
-- 可公开复现的检查记录见 [VERIFICATION.md](VERIFICATION.md)。内部交接和真实业务会话记录不进入开源仓库。
+## 托盘与便携版
 
-## 从源码运行
+- `AgentsChat.exe`：系统托盘宿主，启动后拉起本地后台；双击打开状态窗口（带列头的角色表格、真实聊天名、启停按钮）。
+- `AgentsChat.Cli.exe`：Agent 与脚本使用的命令入口，同一目录也提供 stdio MCP。
+- 便携版由 `python build_portable.py` 生成 `dist/AgentsChat-Portable/` 与 zip，自带 Python 嵌入式运行时，解压即用。
+- 托盘只做三件事：启停后台、展示状态、打开配置/数据目录。本机空闲实测约：托盘 41 MB、后台 29 MB，空闲不调用模型。
+
+---
+
+## 配置文件与数据
+
+| 内容 | Windows 默认位置 |
+| --- | --- |
+| 配置 | `%LOCALAPPDATA%\Programs\AgentsChat\config.local.json` |
+| 状态库 | `%LOCALAPPDATA%\Programs\AgentsChat\.bridge\bridge.sqlite3` |
+| 运行日志 | `.bridge\broker.log`、`.bridge\runs\<task-id>\` |
+| 技能 | `%USERPROFILE%\.agents\skills\`、`.qoder\skills\`、`.codex\skills\` |
+
+状态目录同一时间只允许一个后台实例。
+
+---
+
+## 升级与卸载
 
 ```powershell
-python bridge.py --config config.local.json start --config config.local.json
-python bridge.py status
-python -m unittest discover -s tests -v
-python build_portable.py
+# 升级：重跑安装命令即可，配置与数据保留
+irm https://github.com/Shrbuz/agents-chat/releases/latest/download/install.ps1 | iex
+
+# 卸载（默认保留配置和数据）
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\AgentsChat\uninstall.ps1"
 ```
 
-源码目录的 `config.local.json` 是旧的单项目格式，仍被支持：其中的 `codex`/`qoder` 保持原名，不会破坏已有状态和桌面绑定。新增项目后配置会自动升级为 v2 的 `projects` 格式，旧项目角色继续使用原名。
+`uninstall.ps1` 支持 `-RemoveData`（连数据一起删）、`-KeepSkill`（保留用户级技能）、`-DryRun`（只打印动作）。安装器和卸载器都会校验目标目录：空路径、盘符根、用户目录及其上级目录一律拒绝。
 
+---
 
-## DSH 接入：两种方式（0.6.5）
+## 安全边界与已知限制
 
-### 推荐：`dsh_plugin`（投递进你正在用的聊天）
+- 后台只监听 `127.0.0.1` 随机端口，需本机 bearer；拒绝浏览器 Origin 与外部 Host。信任边界是同一个操作系统用户，**不是多租户安全产品**。
+- 任务不能指定任意可执行程序或工作目录，这些由受信任的角色配置决定。
+- `succeeded` 只表示 Runtime 正常结束，不等于业务验收——仍要检查证据和副作用。
+- 模型仍调用厂商在线服务；空闲等待、去重、邮箱与路由由本地代码完成。
+- 桌面绑定依赖厂商版本相关入口，更新桌面应用后可能需要重新绑定或重启 Qoder 原生连接。
+- macOS 只在 Git bash 下验证过 `install.sh`，真实机器待验。
+- 可公开复现的检查记录见 [VERIFICATION.md](VERIFICATION.md)。
 
-插件跑在 DSH 宿主里，把任务**作为普通用户消息**送进你已打开的那个会话，任务过程和结果你都看得见，不会另起进程。
+---
 
-- 角色怎么来：插件按 adapter 自动发现——某角色 `adapter=dsh` 就由它接管，新增角色不用改插件配置；
-- 绑哪个会话：读 DSH 的会话缓存，按标题匹配角色名（`CMS_Tester` → `tester`），不会用到插件自造的会话；
-- 会话名怎么显示：读 DSH 会话标题；取不到时回落为会话 ID；
-- 中枢没跑：插件自己执行 `start` 拉起，DSH 重启后自动恢复。
+## 从源码开发
 
-配置方法见 `connectors/dsh-host/cordis.patch.yml.example`。**一个插件实例服务多个角色**，每个角色一个独立会话。
+```powershell
+python install.py                                  # 安装到默认位置
+python bridge.py --config config.local.json start  # 直接从源码起后台
+python bridge.py status
+python -m unittest discover -s tests -v            # 81 项测试
+python build_exe.py                                # 编译托盘与 CLI
+python build_portable.py                           # 生成便携包
+```
 
-### 备选：`independent_cli_task`（无人值守，新起进程）
+设计说明见 [DESIGN.md](DESIGN.md)，集成方式见 [INTEGRATION.md](INTEGRATION.md)。
 
-`setup --role 'leader:dsh:...'` 会把任务交给 `dsh headless` 一次性执行，结果自动回到发起方。
+---
 
-- `dsh` 命令行本身是 `.cmd` 包装器，配置层拒绝 shell 包装器，所以适配器解析出真正的
-  `DeepSeek Harness.exe --expose-internals <cli.js>` 并以 `ELECTRON_RUN_AS_NODE=1` 启动。
-- headless 进程**读不到 GUI 的账号凭据**，只认环境变量：用它跑自定义 provider 时，需要在该 profile 的
-  `cordis.patch.yml` 指定 provider，并把密钥导出到环境变量，否则会以
-  `MISSING_CREDENTIAL` 退出（中枢现在会把 stderr 最后一行带回给发起方）。
-- 这是**无人值守执行**：任务在后台跑完回传结果，不会注入你正在用的聊天窗口。
+## 许可证
 
-
-
+[MIT](LICENSE)
