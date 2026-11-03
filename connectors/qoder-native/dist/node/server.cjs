@@ -30,7 +30,7 @@ function resultPrompt(job) {
   // Keep this tail short: it is appended to every task and the role only needs
   // the report command, not an essay about it.
   return job.prompt+"\n\n汇报（只此一次，不要另发回复任务）：\n"+
-    '& "$env:LOCALAPPDATA\\Programs\\AgentsChat\\AgentsChat.Cli.exe" native-result '+job.task_id+' --receipt '+job.nonce+' --text "<结果，800字以内>"';
+    '& "$env:LOCALAPPDATA\\Programs\\AgentsChat\\AgentsChat.Cli.exe" native-result '+job.task_id+' --receipt '+job.nonce+' --text "<把结果写在这里，800字以内>"';
 }
 function createRunner(api,{state,call,readReport}={}) {
   const running=new Map();
@@ -119,3 +119,4 @@ async function activate(context) {
   void loop.catch(error=>console.error("Agents Chat native loop:",error.message));
 }
 module.exports={activate,createRunner,resultPrompt};
+
