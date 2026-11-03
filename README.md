@@ -142,6 +142,17 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 
 接手的人先 `bus show <task-id>` 看完整事件链，再 `claim` 即刻生效。
 
+### 换一个聊天接管角色
+
+同一个角色换了聊天窗口时，显式接管一次，旧会话立刻失去领取资格：
+
+```powershell
+& $cli --project alpha session takeover --role frontend --session <新会话ID> --transport qoder_native
+& $cli --project alpha session retire   --session <旧会话ID>
+```
+
+托盘状态窗口里也有 **「切换会话…」** 按钮：选中角色 → 在线会话排前、历史在后，也可以直接粘贴会话 ID。
+
 ### 坏消息不再拖垮全员
 
 读不懂的消息会被**跳过并记录**，其余消息照常：
@@ -281,3 +292,4 @@ python build_portable.py                           # 生成便携包
 ## 许可证
 
 [MIT](LICENSE)
+

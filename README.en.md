@@ -142,6 +142,17 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 
 The next session runs `bus show <task-id>` to read the full event chain, then `claim` takes effect at once.
 
+### Hand a role over to another chat
+
+When a role moves to a new chat window, take it over explicitly so the old session loses the right to claim:
+
+```powershell
+& $cli --project alpha session takeover --role frontend --session <new-session-id> --transport qoder_native
+& $cli --project alpha session retire   --session <old-session-id>
+```
+
+The tray status window has a **Switch session…** button too: pick a role, online sessions come first and history after, and you can paste a session id directly.
+
 ### A damaged message no longer stops everyone
 
 Messages that cannot be read are **skipped and recorded**; everything else keeps working:
@@ -281,3 +292,4 @@ Design notes: [DESIGN.md](DESIGN.md). Integration: [INTEGRATION.md](INTEGRATION.
 ## License
 
 [MIT](LICENSE)
+

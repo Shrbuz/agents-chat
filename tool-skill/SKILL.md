@@ -134,6 +134,21 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 - 用户只在他打开的聊天里看到消息，所以**不需要“静音”机制**，也不要替用户决定该看哪个聊天；
 - 只有真正需要用户拍板（缺信息、缺授权、两个方案要二选一）时，才在用户能看到的聊天里提一个问题。
 
+## 换会话 / 结束会话（takeover / retire）
+
+同一个角色换了聊天窗口时，**必须显式接管**，否则总线会继续把活算在旧会话头上：
+
+```text
+session takeover --role <角色> --session <新会话ID> --transport dsh_plugin
+session retire   --session <旧会话ID>
+```
+
+- `takeover` 一步完成：绑定到新会话、把该角色其它会话标记 retired、并把「角色 → 活跃会话」写进总线 `_state/active-sessions.json`；
+- 之后 `claim` 会校验活跃会话：旧会话再想领，会被拒绝并提示当前活跃会话是谁；
+- 托盘状态窗口里有 **「切换会话…」** 按钮：选中角色 → 在线会话排在前面、历史在后，也可以直接粘贴会话 ID。
+
+没有 hub 的项目（没有 `_state/active-sessions.json`）不做这个校验，行为与以前一致。
+
 ## 换人接手（release / reassign）
 
 任务做到一半要换会话、换 Agent 时，别硬等租期：
@@ -209,6 +224,7 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 - [references/scheduling.md](references/scheduling.md)：定时与等待
 - [references/tester.md](references/tester.md)：验收角色做法
 - [scripts/agent_chat.py](scripts/agent_chat.py)：没有中枢时可直接运行的文件总线脚本
+
 
 
 
