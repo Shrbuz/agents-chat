@@ -15,8 +15,8 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyDescription("Multi-project, multi-role local agent collaboration hub")]
 [assembly: AssemblyCompany("Agents Chat")]
 [assembly: AssemblyProduct("Agents Chat")]
-[assembly: AssemblyVersion("0.5.2.0")]
-[assembly: AssemblyFileVersion("0.5.2.0")]
+[assembly: AssemblyVersion("0.6.11.0")]
+[assembly: AssemblyFileVersion("0.6.11.0")]
 
 namespace AgentsChatLauncher
 {
@@ -30,6 +30,15 @@ namespace AgentsChatLauncher
             {
 #if CLI
                 // The console entry only runs the Python CLI attached to this console.
+                // Python writes UTF-8 (including Chinese task text); tell the
+                // console to decode/encode it as UTF-8 instead of the OEM page.
+                try
+                {
+                    Console.OutputEncoding = new UTF8Encoding(false);
+                    Console.InputEncoding = new UTF8Encoding(false);
+                }
+                catch (IOException) { }
+                catch (System.Security.SecurityException) { }
                 return RunPython(root, "bridge.py", args, false, false);
 #else
                 if (args.Length > 0 && EqualsCommand(args[0], "uninstall"))
@@ -928,14 +937,17 @@ namespace AgentsChatLauncher
             list.GridLines = true;
             list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
             list.HideSelection = false;
+            list.ShowItemToolTips = true;
             list.Font = new Font("Segoe UI", 9F);
-            list.Columns.Add("项目", 140);
-            list.Columns.Add("角色", 100);
+            list.Columns.Add("项目", 120);
+            list.Columns.Add("角色", 90);
+            list.Columns.Add("状态", 92);
             list.Columns.Add("适配器", 66);
-            list.Columns.Add("模式", 150);
-            list.Columns.Add("绑定会话", 220);
-            list.Columns.Add("队列", 46);
-            list.Columns.Add("职责", 320);
+            list.Columns.Add("传输", 118);
+            list.Columns.Add("模式", 128);
+            list.Columns.Add("绑定会话", 200);
+            list.Columns.Add("队列", 42);
+            list.Columns.Add("职责", 260);
             Controls.Add(list);
 
             Panel buttons = new Panel();
@@ -1039,11 +1051,16 @@ namespace AgentsChatLauncher
             int projects = health == null ? 0 : TrayApp.Number(health, "projects");
             int roles = health == null ? 0 : TrayApp.Number(health, "roles");
             Dictionary<string, object> states = health == null ? null : TrayApp.Value(health, "states");
+            bool degraded = health != null && health.ContainsKey("degraded")
+                && Convert.ToBoolean(health["degraded"]);
             summary.Text = "运行中 · " + projects + " 个项目 / " + roles + " 个角色 · 等待 "
                 + (states == null ? 0 : TrayApp.Number(states, "queued")) + " · 执行 "
                 + (states == null ? 0 : TrayApp.Number(states, "running"))
-                + (health != null && health.ContainsKey("version") ? " · v" + Convert.ToString(health["version"]) : "");
+                + (health != null && health.ContainsKey("version") ? " · v" + Convert.ToString(health["version"]) : "")
+                + (degraded ? " · ⚠ 唤醒链路异常" : "");
+            summary.ForeColor = degraded ? Color.Firebrick : SystemColors.ControlText;
             Dictionary<string, object> rolesRoot = TrayApp.Value(status, "roles");
+            int mismatchCount = 0;
             list.BeginUpdate();
             try
             {
@@ -1056,14 +1073,31 @@ namespace AgentsChatLauncher
                     {
                         Dictionary<string, object> role = roleObject as Dictionary<string, object>;
                         if (role == null) continue;
+                        bool mismatch = Convert.ToBoolean(role.ContainsKey("adapter_transport_mismatch")
+                            ? role["adapter_transport_mismatch"] : false);
+                        string expected = Convert.ToString(role.ContainsKey("expected_adapter")
+                            ? role["expected_adapter"] : null);
                         ListViewItem row = new ListViewItem(Convert.ToString(project["name"]));
                         row.Tag = Convert.ToString(project["id"]) + "|" + Convert.ToString(role["address"]);
                         row.SubItems.Add(Convert.ToString(role["role"]));
+                        row.SubItems.Add(mismatch ? "⚠ 不一致" : "正常");
                         row.SubItems.Add(Convert.ToString(role["adapter"]));
+                        string roleTransport = Convert.ToString(role.ContainsKey("desktop_transport")
+                            ? role["desktop_transport"] : null);
+                        row.SubItems.Add(string.IsNullOrWhiteSpace(roleTransport) ? "—" : roleTransport);
                         row.SubItems.Add(Convert.ToString(role["mode"]));
                         row.SubItems.Add(BindingText(role));
                         row.SubItems.Add(Convert.ToBoolean(role.ContainsKey("pending") ? role["pending"] : false) ? "有" : "无");
                         row.SubItems.Add(Convert.ToString(role["description"]));
+                        if (mismatch)
+                        {
+                            mismatchCount++;
+                            row.ForeColor = Color.Firebrick;
+                            row.ToolTipText = "适配器与传输不一致：角色 adapter=" + Convert.ToString(role["adapter"])
+                                + "，绑定 transport=" + Convert.ToString(role["desktop_transport"])
+                                + "（属于 " + (string.IsNullOrWhiteSpace(expected) ? "未知" : expected) + "）。"
+                                + "请用 session migrate-and-takeover 修复。";
+                        }
                         list.Items.Add(row);
                     }
                 }
@@ -1072,6 +1106,8 @@ namespace AgentsChatLauncher
             {
                 list.EndUpdate();
             }
+            if (mismatchCount > 0)
+                summary.Text += " · ⚠ " + mismatchCount + " 个角色适配器与传输不一致";
         }
 
         private static string ShortId(string value)

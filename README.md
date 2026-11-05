@@ -4,7 +4,7 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.6.8-blue)
+![Version](https://img.shields.io/badge/version-0.6.11-blue)
 
 让同一台机器上的多个 Agent 聊天互相派活、自动回传结果并验收。项目里的角色（`leader`、`frontend`、`tester`……）各自是一个协作席位，任务按角色路由，不需要人工在两个聊天窗口之间复制粘贴。
 
@@ -111,11 +111,27 @@ beta.architect ──send alpha.backend──▶ alpha.backend   (跨项目)
 
 技能会自动判断项目现状并选一条，不会来回问用户。
 
+### 通知不等于可中断任务
+
+普通 `send` 的 `--timeout` 是**等待目标执行**的上限，不是“到点就杀掉目标聊天”的授权。默认超时只会停止发送方等待，目标会话继续工作；只有显式加 `--interrupt-on-timeout` 才会向目标发送 cancel。`--delivery-timeout` 单独控制“目标聊天有没有接住这条消息”。
+
+只提醒对方看收件箱时，用专用的 `notify`（别名 `wakeup`），它自动标记为 `agent_chat_wakeup`，投递成功即结束，不等待、不中断目标执行：
+
+```powershell
+& $cli --project alpha notify --from backend --to frontend --text "看看收件箱"
+```
+
+任务结果会明确返回 `run_delivered`、`cancel_requested`、`cancel_acknowledged`；`desktop_delivery_timeout` 和 `desktop_execution_timeout` 是两种不同的超时。
+
+Windows 下中文优先用 `--file <utf8文件>` 或 `--text-stdin`，避免命令行编码把中文变成乱码；检测到已经损坏的 U+FFFD 时 CLI 会拒绝写入。
+
 ---
 
 ## 文件总线
 
 项目关联 `agent_chat` 总线后，中枢**原生实现**同一套协议：事件是只增不改的 JSON 文件，`_state/bus.lock` 上加 OS 文件锁，写入走临时文件 + fsync + 原子改名，任务状态由事件重放得出。
+
+唤醒链路现在会自检：如果总线被重建导致事件序号从 1 重新开始，而数据库游标还停在旧的高序号，启动/巡检会重置游标并补扫仍待处理的任务；`health` 返回 `degraded` 和 `agent_chat_health`，唤醒线程异常或扫描失败时托盘会显示 **⚠ 唤醒链路异常**，不再用 `workers_alive` 冒充健康。
 
 ```powershell
 $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
@@ -142,16 +158,29 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 
 接手的人先 `bus show <task-id>` 看完整事件链，再 `claim` 即刻生效。
 
-### 换一个聊天接管角色
+### 换聊天 / 换客户端接管角色
 
-同一个角色换了聊天窗口时，显式接管一次，旧会话立刻失去领取资格：
+先分清两件事：**换会话**只替换聊天，适配器不变；**接管角色**表示当前客户端取得完整所有权，客户端类型变了就连适配器一起迁移。
+
+同一个客户端换聊天窗口（不重写适配器，也不重启中枢）：
 
 ```powershell
 & $cli --project alpha session takeover --role frontend --session <新会话ID> --transport qoder_native
 & $cli --project alpha session retire   --session <旧会话ID>
 ```
 
-托盘状态窗口里也有 **「切换会话…」** 按钮：选中角色 → 在线会话排前、历史在后，也可以直接粘贴会话 ID。
+换客户端接管（例如 DSH 的 tester 由 Codex 接管）必须用原子迁移：
+
+```powershell
+& $cli --project alpha session migrate-and-takeover --role tester `
+    --session <当前会话ID> --transport codex_app_tools --adapter auto
+```
+
+- `--adapter auto` 按 transport 推导：`codex_app_tools→codex`、`qoder_native→qoder`、`dsh_plugin→dsh`。
+- 迁移依次完成：主配置 → `.agents-chat/project.json` → 重启中枢 → 绑定新会话 → 退休旧会话 → 更新 `active-sessions`；任一步失败会回滚。
+- 返回 `adapter_changed`、`hub_restarted`、`active_session`、`retired_sessions`、`postconditions`。
+- 旧 `session takeover` 在 adapter/transport 不一致时返回 `adapter_transport_mismatch`，不会再留下半迁移状态。
+- 托盘状态窗口会标出 **⚠ 不一致** 的角色（红色行 + 顶部计数）；「切换会话…」按钮仍然可用。
 
 ### 坏消息不再拖垮全员
 

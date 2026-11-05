@@ -16,8 +16,9 @@ from . import titles
 from .store import Store, TERMINAL, compact
 from .desktop_transport import DesktopHub
 from .agentchat_bridge import AgentChatBridge
-from .config import (ConfigError, allowed_target, find_role, label, normalize_config,
-                     projects_summary, read_config, session_id)
+from .config import (ConfigError, adapter_for_transport, allowed_target, find_role, label,
+                     normalize_config, projects_summary, read_config, session_id as config_session_id,
+                     transport_supported)
 
 
 def integer(value, low, high):
@@ -75,6 +76,19 @@ class Broker:
         for name, binding in list(self.desktop.bindings.items()):
             endpoint = self.endpoints.get(name)
             if not (endpoint and binding.get("session_id")):
+                continue
+            transport = binding.get("transport", "desktop")
+            expected = adapter_for_transport(transport)
+            if (expected is not None and endpoint["adapter"] != "fixture"
+                    and expected != endpoint["adapter"]):
+                # A binding left over from another adapter must not be relabelled
+                # with the new adapter on startup.  That relabelling is exactly
+                # the half-migrated state; keep the old session row intact and let
+                # `session migrate-and-takeover` retire it explicitly.
+                sys.stderr.write("agents-chat: binding for " + name + " uses transport "
+                                 + transport + " but role adapter is " + endpoint["adapter"]
+                                 + "; run session migrate-and-takeover\n")
+                sys.stderr.flush()
                 continue
             try:
                 # Prefer the chat name the client itself shows; fall back to what
@@ -158,12 +172,17 @@ class Broker:
                     binding = self.desktop.bindings.get(name)
                     if binding:
                         from .runtime import make_prompt
-                        # A wakeup is a notification: if it runs long, leave the
-                        # chat alone instead of interrupting work in progress.
-                        interrupt = task["payload"].get("kind") != "agent_chat_wakeup"
-                        state, result = self.desktop.dispatch(task, binding, make_prompt(task, endpoint),
-                                                             self.store.cancelled, self.stop,
-                                                             interrupt_on_timeout=interrupt)
+                        # A timeout only stops the sender waiting unless the
+                        # caller explicitly opted into interrupting the chat.
+                        # Wakeups never opt in; the broker used to infer the
+                        # opposite for ordinary sends and killed live work.
+                        interrupt = bool(task["payload"].get("interrupt_on_timeout", False))
+                        state, result = self.desktop.dispatch(
+                            task, binding, make_prompt(task, endpoint),
+                            self.store.cancelled, self.stop,
+                            interrupt_on_timeout=interrupt,
+                            delivery_timeout=task["payload"].get("delivery_timeout", 30),
+                            execution_timeout=task["payload"].get("timeout", 180))
                         result = {**result, "mode": "desktop_session", "session_id": binding["session_id"]}
                         run_dir = self.state_dir / "runs" / task["id"]
                         run_dir.mkdir(parents=True, exist_ok=True)
@@ -211,6 +230,41 @@ class Broker:
             result[endpoint["role"]] = binding["session_id"]
         return result
 
+    def takeover_postconditions(self, internal, session_id, transport, expected_adapter):
+        """Prove that a takeover produced a complete, single-owner role.
+
+        The skill and the tray both consume this instead of re-deriving the
+        rules, so "success" means the same thing everywhere.
+        """
+        endpoint = self.endpoints[internal]
+        keep = "desktop:" + session_id
+        sessions = self.store.list_sessions(project=endpoint["project"], role=endpoint["role"])
+        row = next((item for item in sessions if item["id"] in (keep, session_id)), None)
+        others = [item for item in sessions if item["id"] != keep]
+        binding = self.desktop.bindings.get(internal) or {}
+        retired = [item["id"] for item in others if item.get("retired")]
+        checks = {
+            "role_adapter_matches_client": (endpoint["adapter"] == "fixture"
+                                            or endpoint["adapter"] == expected_adapter),
+            "session_adapter_matches_role": bool(
+                row and (endpoint["adapter"] == "fixture" or row["adapter"] == endpoint["adapter"])),
+            "transport_matches_adapter": (endpoint["adapter"] == "fixture"
+                                          or transport_supported(endpoint["adapter"], transport)),
+            "single_active_session": (binding.get("session_id") == session_id
+                                      and not [item for item in others if not item.get("retired")]),
+            "old_sessions_retired": all(item.get("retired") for item in others),
+        }
+        return {
+            "ok": all(checks.values()),
+            "checks": checks,
+            "role_adapter": endpoint["adapter"],
+            "client_adapter": expected_adapter,
+            "session_adapter": row["adapter"] if row else None,
+            "transport": transport,
+            "active_session": binding.get("session_id"),
+            "retired_sessions": retired,
+        }
+
     def write_active_sessions(self, project_id):
         """Publish the role -> session map into the project's bus.
 
@@ -233,6 +287,15 @@ class Broker:
             # A missing bus must not break binding; the hub still routes by role.
             pass
 
+    def binding_mismatch(self, agent):
+        """True when the persisted chat cannot be served by this role's adapter."""
+        endpoint = self.endpoints.get(agent)
+        binding = self.desktop.bindings.get(agent, {}) or {}
+        transport = binding.get("transport")
+        expected = adapter_for_transport(transport)
+        return bool(endpoint and transport and expected and endpoint["adapter"] != "fixture"
+                    and expected != endpoint["adapter"])
+
     def desktop_input_disabled(self, agent):
         binding = self.desktop.bindings.get(agent, {})
         return (binding.get("transport") == "qoder_accessibility"
@@ -248,10 +311,14 @@ class Broker:
         if not isinstance(p, dict):
             raise ValueError("params_must_be_object")
         if method == "health":
+            agent_chat_health = self.agent_chat.health()
             return {"status": "running", "pid": os.getpid(), "mode": "multi_project_hub", "version": __version__,
+                    "degraded": bool(agent_chat_health.get("degraded")
+                                     or not agent_chat_health.get("ok", True)),
                     "states": self.store.stats(), "projects": len(self.config["projects"]),
                     "roles": len(self.endpoints), "recovered": self.recovered,
                     "agent_chat": self.agent_chat.status(),
+                    "agent_chat_health": agent_chat_health,
                     "workers_alive": sum(w.is_alive() for w in self.workers),
                     "failed_tasks": self.store.recent_failures(5)}
         if method == "status":
@@ -269,6 +336,10 @@ class Broker:
                     binding = self.desktop.bindings.get(internal, {})
                     role["session_title"] = titles.desktop_title(binding.get("transport"), binding.get("session_id"))
                     role["pending"] = self.store.has_pending(internal)
+                    # The tray and the skill both need an explicit signal.  A
+                    # mismatch used to be invisible until tasks failed.
+                    role["expected_adapter"] = adapter_for_transport(binding.get("transport"))
+                    role["adapter_transport_mismatch"] = self.binding_mismatch(internal)
             return {"projects": projects, "totals": self.store.stats()}
         if method == "targets":
             result = []
@@ -281,6 +352,9 @@ class Broker:
                                "desktop_input_enabled": endpoint.get("desktop_input_enabled", True),
                                "desktop_transport": self.desktop.bindings.get(name, {}).get("transport"),
                                "session_id": self.desktop.bindings.get(name, {}).get("session_id"),
+                               "expected_adapter": adapter_for_transport(
+                                   self.desktop.bindings.get(name, {}).get("transport")),
+                               "adapter_transport_mismatch": self.binding_mismatch(name),
                                "sessions": self.public_sessions(project=endpoint.get("project"), role=endpoint.get("role"))})
             return result
         if method == "desktop_bind":
@@ -293,13 +367,16 @@ class Broker:
             if chat is not None and (not isinstance(chat, str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,159}", chat)):
                 raise ValueError("invalid_desktop_session_id")
             transport = p.get("transport")
-            valid = {"codex": {"codex_app_tools"},
-                     "qoder": {"qoder_accessibility", "qoder_extension", "qoder_native"},
-                     "dsh": {"dsh_plugin"},
-                     "fixture": {"codex_app_tools", "qoder_accessibility", "qoder_extension",
-                                 "qoder_native", "dsh_plugin"}}
-            if chat is not None and transport not in valid.get(endpoint["adapter"], set()):
-                raise ValueError("unsupported_desktop_transport")
+            if chat is not None:
+                expected = adapter_for_transport(transport)
+                if expected is None:
+                    raise ValueError("unsupported_desktop_transport")
+                if endpoint["adapter"] != "fixture" and expected != endpoint["adapter"]:
+                    raise ValueError(
+                        "adapter_transport_mismatch: role adapter=" + endpoint["adapter"]
+                        + " cannot use transport=" + str(transport) + "; it belongs to adapter="
+                        + expected + ". Use session migrate-and-takeover to change the adapter,"
+                        " or switch to a chat from the role's own client")
             if chat and (self.store.session_retired("desktop:" + chat) or self.store.session_retired(chat)):
                 raise ValueError("session_retired: 这个会话已被用户结束，请先接管到另一个会话")
             # Binding a role changes routing, so never redirect already accepted work.
@@ -327,21 +404,60 @@ class Broker:
         if method == "session_takeover":
             # One action moves a role to another chat: bind, retire the rest, and
             # publish the active session so the bus can refuse the old one.
+            # Adapter migration is *not* part of this command: changing the
+            # adapter rewrites the role's runtime and needs a hub restart, which
+            # the CLI performs atomically in `session migrate-and-takeover`.
             internal = self.resolve(p.get("agent") or p.get("role"), p.get("project"), required=True)
             endpoint = self.endpoints[internal]
-            takeover_session, transport = p["session_id"], p["transport"]
-            if not isinstance(takeover_session, str) or not takeover_session:
-                raise ValueError("invalid_desktop_session_id")
-            with self.cv:
-                self.desktop.bind(internal, {"session_id": takeover_session, "transport": transport})
+            takeover_session, transport = p.get("session_id"), p.get("transport")
+            try:
+                takeover_session = config_session_id(takeover_session)
+            except ConfigError:
+                raise ValueError("invalid_desktop_session_id") from None
+            expected = adapter_for_transport(transport)
+            if expected is None:
+                raise ValueError("unsupported_desktop_transport")
+            if endpoint["adapter"] != "fixture" and expected != endpoint["adapter"]:
+                raise ValueError(
+                    "adapter_transport_mismatch: role adapter=" + endpoint["adapter"]
+                    + " cannot be taken over with transport=" + str(transport)
+                    + " (that transport belongs to adapter=" + expected
+                    + "). Use `session migrate-and-takeover --role " + endpoint["role"]
+                    + " --adapter auto --transport " + str(transport)
+                    + "` to move the role to this client atomically")
+            project_id, role_id = endpoint["project"], endpoint["role"]
+            previous_binding = self.desktop.bindings.get(internal)
+            sessions_before = self.store.session_snapshot(project_id, role_id)
+            try:
+                with self.cv:
+                    self.desktop.bind(internal, {"session_id": takeover_session, "transport": transport})
+                self.store.takeover_session("desktop:" + takeover_session, project_id, role_id,
+                                            endpoint["adapter"], transport)
+                self.write_active_sessions(project_id)
+                postconditions = self.takeover_postconditions(
+                    internal, takeover_session, transport, expected)
+                if not postconditions["ok"]:
+                    raise ValueError("takeover_postconditions_failed: "
+                                     + compact(postconditions["checks"]))
+            except Exception:
+                # Put the previous binding and every session row back before the
+                # caller sees an error.  A failed takeover must leave no trace.
+                try:
+                    with self.cv:
+                        self.desktop.bind(internal, previous_binding)
+                finally:
+                    self.store.restore_session_snapshot(project_id, role_id, sessions_before)
+                    self.write_active_sessions(project_id)
+                raise
             if self.store.has_pending(internal):
                 self.store.cancel_wakeups(internal)
-            self.store.register_session("desktop:" + takeover_session, endpoint["project"], endpoint["role"],
-                                        endpoint["adapter"], transport, "桌面聊天绑定")
-            retired = self.store.retire_role_sessions(endpoint["project"], endpoint["role"],
-                                                      keep="desktop:" + takeover_session)
-            self.write_active_sessions(endpoint["project"])
-            return {"agent": internal, "session_id": takeover_session, "retired": retired}
+            retired = postconditions.get("retired_sessions", [])
+            return {"agent": internal, "address": internal, "session_id": takeover_session,
+                    "adapter": endpoint["adapter"], "transport": transport,
+                    "adapter_changed": False, "hub_restarted": False,
+                    "active_session": takeover_session,
+                    "retired": retired, "retired_sessions": retired,
+                    "postconditions": postconditions}
         if method == "session_retire":
             retire_target = p.get("session_id")
             if not isinstance(retire_target, str) or not retire_target:
@@ -370,6 +486,12 @@ class Broker:
             binding = self.desktop.bindings.get(internal)
             if not binding or binding["session_id"] != p["session_id"]:
                 raise ValueError("desktop_session_not_bound")
+            if self.binding_mismatch(internal):
+                raise ValueError(
+                    "adapter_transport_mismatch: role adapter="
+                    + self.endpoints[internal]["adapter"]
+                    + " cannot receive through transport=" + str(binding.get("transport"))
+                    + "; run session migrate-and-takeover")
             if self.store.session_retired("desktop:" + p["session_id"]):
                 raise ValueError("session_retired")
             seconds = p.get("seconds", 40)
@@ -394,7 +516,7 @@ class Broker:
                 raise ValueError("project_and_role_required")
             internal = find_role(self.config, rid, pid)
             endpoint = self.endpoints[internal]
-            sid = session_id(p.get("session"))
+            sid = config_session_id(p.get("session"))
             transport = p.get("transport", "chat")
             if not isinstance(transport, str) or not re.fullmatch(r"[a-z_]{1,32}", transport):
                 raise ValueError("invalid_session_transport")
@@ -410,16 +532,17 @@ class Broker:
                     "description": endpoint.get("description", ""), "peers": endpoint.get("peers", []),
                     "mode": self.target_mode(internal)}}
         if method == "session_heartbeat":
-            return {"session": self.store.heartbeat_session(session_id(p.get("session")))}
+            return {"session": self.store.heartbeat_session(config_session_id(p.get("session")))}
         if method == "session_list":
             return {"sessions": self.public_sessions(p.get("project"), p.get("role"),
                                                      p.get("include_offline", True))}
         if method == "session_remove":
-            return self.store.remove_session(session_id(p.get("session")))
+            return self.store.remove_session(config_session_id(p.get("session")))
         if method == "send":
             if self.stop.is_set():
                 raise ValueError("broker_stopping")
-            allowed = {"sender", "target", "prompt", "key", "timeout", "context", "reply_mode", "queue_ttl", "project"}
+            allowed = {"sender", "target", "prompt", "key", "timeout", "context", "reply_mode",
+                       "queue_ttl", "project", "interrupt_on_timeout", "delivery_timeout", "kind"}
             if set(p) - allowed:
                 raise ValueError("unknown_send_fields")
             project = p.get("project")
@@ -428,6 +551,12 @@ class Broker:
             target_endpoint = self.endpoints[target]
             if not target_endpoint.get("enabled", True):
                 raise ValueError("target_unavailable")
+            if self.binding_mismatch(target):
+                raise ValueError(
+                    "adapter_transport_mismatch: target role adapter=" + target_endpoint["adapter"]
+                    + " but its bound chat uses transport="
+                    + str(self.desktop.bindings.get(target, {}).get("transport"))
+                    + "; run session migrate-and-takeover before dispatching work")
             if self.desktop_input_disabled(target):
                 raise ValueError("qoder_desktop_input_disabled: Qoder can send requests and receive their results through wait/inbox; native unsolicited desktop delivery is not connected")
             if not allowed_target(self.config, sender, target):
@@ -443,6 +572,16 @@ class Broker:
             reply = p.get("reply_mode", "mailbox")
             if reply not in ("mailbox", "run"):
                 raise ValueError("unknown_reply_mode")
+            kind = p.get("kind")
+            if kind not in (None, "agent_chat_wakeup"):
+                raise ValueError("unknown_task_kind")
+            interrupt = p.get("interrupt_on_timeout", False)
+            if type(interrupt) is not bool:
+                raise ValueError("interrupt_on_timeout_must_be_boolean")
+            if kind == "agent_chat_wakeup":
+                # A wakeup is a notification, never a cancellable execution.
+                reply, interrupt = "mailbox", False
+            delivery_timeout = integer(p.get("delivery_timeout", min(30, timeout)), 1, 3600)
             if reply == "run" and (sender not in self.endpoints or not self.endpoints[sender].get("enabled", True)):
                 raise ValueError("reply_runtime_not_configured")
             if reply == "run" and self.desktop_input_disabled(sender):
@@ -459,13 +598,18 @@ class Broker:
                 normalized.append(str(path))
             payload = {"prompt": prompt, "timeout": timeout, "context": normalized,
                        "reply_mode": reply, "queue_ttl": queue_ttl,
+                       "interrupt_on_timeout": interrupt, "delivery_timeout": delivery_timeout,
                        "sender_address": sender, "target_address": target}
+            if kind == "agent_chat_wakeup":
+                payload.update({"kind": kind, "notify": False})
             # Stable fields only in the idempotency fingerprint. Queue expiration is derived from created.
             with self.cv:
                 task_id, duplicate = self.store.enqueue(sender, target, key, payload)
                 self.cv.notify_all()
             return {"task_id": task_id, "duplicate": duplicate, "state": self.store.get(task_id)["state"],
-                    "sender": sender, "target": target, "mode": self.target_mode(target)}
+                    "sender": sender, "target": target, "mode": self.target_mode(target),
+                    "kind": kind, "delivery_timeout": delivery_timeout,
+                    "interrupt_on_timeout": interrupt}
         if method == "task":
             return self.public_task(p["task_id"])
         if method == "wait":

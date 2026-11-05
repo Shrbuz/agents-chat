@@ -105,6 +105,32 @@ class Store:
         with self.db() as db:
             return self.decode(db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
 
+    def task_by_key(self, sender, key):
+        """The task created for one idempotency key, or None.
+
+        Wakeups use this to tell "this event was already turned into a task"
+        apart from "the role merely has some other work in flight".
+        """
+        with self.db() as db:
+            row = db.execute("SELECT * FROM tasks WHERE sender=? AND idem=?",
+                             (sender, key)).fetchone()
+            return self.decode(row) if row else None
+
+    def latest_task_by_key_prefix(self, sender, prefix):
+        """Latest attempt for a wakeup key, including ``:retry:`` attempts."""
+        with self.db() as db:
+            row = db.execute(
+                "SELECT * FROM tasks WHERE sender=? AND substr(idem,1,?)=? "
+                "ORDER BY created DESC, rowid DESC LIMIT 1",
+                (sender, len(prefix), prefix)).fetchone()
+            return self.decode(row) if row else None
+
+    def count_tasks_by_key_prefix(self, sender, prefix):
+        with self.db() as db:
+            return db.execute(
+                "SELECT count(*) FROM tasks WHERE sender=? AND substr(idem,1,?)=?",
+                (sender, len(prefix), prefix)).fetchone()[0]
+
     def claim(self, target):
         with self.db(True) as db:
             row = db.execute("SELECT * FROM tasks WHERE target=? AND state='queued' ORDER BY created,id LIMIT 1", (target,)).fetchone()
@@ -253,6 +279,100 @@ class Store:
             row = db.execute("UPDATE sessions SET retired=1, status='retired', description=?"
                              " WHERE id=?", (reason[:300], session_id))
             return {"retired": row.rowcount}
+
+    def takeover_session(self, session_id, project, role, adapter, transport,
+                         description="桌面聊天绑定"):
+        """Register the new chat and retire the role's other sessions atomically.
+
+        Binding and retirement must commit together: a half-applied takeover is
+        exactly the state this method exists to make impossible.
+        """
+        now = time.time()
+        with self.db(True) as db:
+            row = db.execute("SELECT * FROM sessions WHERE id=?", (session_id,)).fetchone()
+            if row is not None and row["retired"]:
+                raise ValueError("session_retired")
+            if row is not None and (row["project"] != project or row["role"] != role):
+                raise ValueError("session_id_already_bound_to_another_role")
+            if row is None:
+                db.execute("INSERT INTO sessions(id,project,role,adapter,transport,status,description,metadata,"
+                           "created,last_seen) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                           (session_id, project, role, adapter, transport, "online", description, "{}",
+                            now, now))
+            else:
+                db.execute("UPDATE sessions SET adapter=?,transport=?,status='online',description=?,last_seen=?"
+                           " WHERE id=?", (adapter, transport, description, now, session_id))
+            others = db.execute("SELECT id FROM sessions WHERE project=? AND role=? AND id<>? AND retired=0",
+                                (project, role, session_id)).fetchall()
+            for other in others:
+                db.execute("UPDATE sessions SET retired=1,status='retired' WHERE id=?", (other[0],))
+            current = self._session_row(db.execute("SELECT * FROM sessions WHERE id=?",
+                                                   (session_id,)).fetchone())
+            return current, [other[0] for other in others]
+
+    def session_snapshot(self, project, role):
+        """JSON-safe copy of every session row for one role, for rollback."""
+        fields = ("id", "project", "role", "adapter", "transport", "status", "description",
+                  "metadata", "created", "last_seen", "retired")
+        with self.db() as db:
+            rows = db.execute("SELECT * FROM sessions WHERE project=? AND role=?",
+                              (project, role)).fetchall()
+            result = []
+            for row in rows:
+                item = self._session_row(row)
+                result.append({key: item.get(key) for key in fields})
+            return result
+
+    def restore_session_snapshot(self, project, role, sessions):
+        """Undo a takeover by restoring the exact previous session rows."""
+        if not isinstance(sessions, list) or len(sessions) > 500:
+            raise ValueError("invalid_session_snapshot")
+        prepared = []
+        for item in sessions:
+            if not isinstance(item, dict):
+                raise ValueError("invalid_session_snapshot")
+            session = item.get("id")
+            if not isinstance(session, str) or not session:
+                raise ValueError("invalid_session_snapshot")
+            metadata = item.get("metadata") or {}
+            prepared.append({
+                "id": session,
+                "adapter": item.get("adapter"),
+                "transport": item.get("transport") or "chat",
+                "status": item.get("status") or "online",
+                "description": item.get("description") or "",
+                "metadata": compact(metadata if isinstance(metadata, dict) else {}),
+                "created": item.get("created") or time.time(),
+                "last_seen": item.get("last_seen") or time.time(),
+                "retired": 1 if item.get("retired") else 0,
+            })
+        with self.db(True) as db:
+            for row in prepared:
+                current = db.execute("SELECT project,role FROM sessions WHERE id=?",
+                                     (row["id"],)).fetchone()
+                if current is not None and (current["project"] != project or current["role"] != role):
+                    raise ValueError("session_id_already_bound_to_another_role")
+            keep = {row["id"] for row in prepared}
+            current = db.execute("SELECT id FROM sessions WHERE project=? AND role=?",
+                                 (project, role)).fetchall()
+            for row in current:
+                if row[0] not in keep:
+                    db.execute("DELETE FROM sessions WHERE id=?", (row[0],))
+            for row in prepared:
+                exists = db.execute("SELECT 1 FROM sessions WHERE id=?", (row["id"],)).fetchone()
+                if exists:
+                    db.execute("UPDATE sessions SET project=?,role=?,adapter=?,transport=?,status=?,"
+                               "description=?,metadata=?,created=?,last_seen=?,retired=? WHERE id=?",
+                               (project, role, row["adapter"], row["transport"], row["status"],
+                                row["description"], row["metadata"], row["created"], row["last_seen"],
+                                row["retired"], row["id"]))
+                else:
+                    db.execute("INSERT INTO sessions(id,project,role,adapter,transport,status,"
+                               "description,metadata,created,last_seen,retired) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                               (row["id"], project, role, row["adapter"], row["transport"], row["status"],
+                                row["description"], row["metadata"], row["created"], row["last_seen"],
+                                row["retired"]))
+            return len(prepared)
 
     def retire_role_sessions(self, project, role, keep=None):
         """Retire every session of a role except the one being taken over."""

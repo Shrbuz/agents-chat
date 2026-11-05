@@ -60,15 +60,20 @@
 
 任务正文只包含当前任务、角色地址和最多 8 个本地文件引用；不注入旧邮箱、历史对话或进度事件。`reply_mode=run` 是唯一会额外唤醒发送方模型的情况，且只一次。
 
+桌面投递把两件事分开：`delivery_timeout` 只等聊天接住 prompt，`timeout` 等目标执行。超时默认只停止发送方等待，**绝不取消目标会话**；只有显式 `interrupt_on_timeout` 才发 cancel。`notify`/`wakeup` 使用 `kind=agent_chat_wakeup`，投递确认即完成，不等待执行，也不进入结果邮箱。结果字段固定为 `run_delivered`、`cancel_requested`、`cancel_acknowledged`，并区分 `desktop_delivery_timeout` / `desktop_execution_timeout`。
+
 ### agent-chat 文件总线兼容
 
 用户已有的 `agent_chat/project.json` 保持不动。后台的 `AgentChatBridge` 只做唤醒：
 
-- 首次启动把游标定位到当前最新事件，不重放历史；
-- 之后扫描各角色 `*_msg` 目录，只对 `request`、`result`、`blocked`、`cancel` 和 `verify(fail)` 事件生成一次短唤醒任务；
-- 唤醒任务带 `notify=false`，不进入结果邮箱，不产生二次派发；
+- 首次启动把游标定位到当前最新事件，不重放已经处理过的历史；
+- 游标是序号文件名；若总线被重建（序号从 1 重新开始）而游标仍是旧的高序号，启动/巡检会重置游标并补扫仍需要动作的任务；
+- 之后扫描各角色 `*_msg` 目录，对 `request`、`claim`、`result`、`blocked`、`cancel`、`release`、`reassign`、`verify(pass/fail)` 事件生成一次短唤醒任务；
+- 唤醒任务带 `notify=false`、`kind=agent_chat_wakeup`、`interrupt_on_timeout=false`，投递确认即完成，不进入结果邮箱，不产生二次派发；
+- 定时对“最新事件仍要求动作、但任务表里没有对应唤醒”的 pending/resolved/blocked 任务做一次补发，避免丢事件；重复事件按 `(sender, idem)` 幂等；
+- 角色已有其它排队/执行任务时**不再阻塞唤醒**：新事件照常入队，worker 串行处理；否则长任务会让游标永远停住；
 - claim、租约、progress、result、verify 仍由该 skill 的 helper 执行；
-- 角色有空闲任务时暂缓下一条唤醒，游标不前移，避免一次堆积大量任务；
+- 唤醒线程的存活、最近扫描时间、最近错误、cursor 重置次数都进入 `health` 的 `agent_chat_health` / `degraded`，扫描异常会写 broker 日志而不是静默吞掉；
 - 事件正文和附件都是数据，不扩大工具权限。
 
 这样，“同一 Agent 的多会话”可以直接用 skill 的文件协议；需要跨 Agent 唤醒时由后台补上传输。两套状态不混写。

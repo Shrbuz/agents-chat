@@ -54,6 +54,9 @@
 - 同一 key 只对应同一请求；重试复用，内容变了换 key。
 - `reply_mode=run` 只额外唤醒一次发起方运行时，用于自动处理结果；不要用它制造循环。
 - 跨项目目标写 `beta.frontend`；角色 `peers` 白名单限制出站目标。
+- 普通 `send --timeout` 超时只停止发送方等待，**默认不会取消目标聊天**；只有 `--interrupt-on-timeout` 才授权中断。`--delivery-timeout` 单独控制投递等待。
+- 只提醒对方查看收件箱时用 `notify`/`wakeup`（自动 `kind=agent_chat_wakeup`）：投递即完成，不等待目标执行。任务结果带 `run_delivered`、`cancel_requested`、`cancel_acknowledged`。
+- Windows 中文用 `--file <utf8文件>` 或 `--text-stdin`；含 U+FFFD 的文本会被拒绝，避免把乱码写进数据库。
 
 ## stdio MCP
 
@@ -118,6 +121,15 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 ```
 
 Codex 连接器还需要一次管理聊天准备的 app-tools 上下文（`codex-desktop.local.json`）；缺失时 `join` 会明确告警，不会回退 CLI。Qoder 原生扩展未在线时同样明确报错。
+
+`join` 只在客户端类型不变时绑定会话。要把另一个客户端的角色接管过来（例如在 Codex 里接管 dsh 的 tester），必须迁移适配器，使用原子命令：
+
+```powershell
+& $cli --project alpha session migrate-and-takeover --role tester `
+    --session <当前会话ID> --transport codex_app_tools --adapter auto
+```
+
+旧 `session takeover` 在 adapter 与 transport 不一致时返回 `adapter_transport_mismatch`；`role list` 和托盘会显示 `adapter_transport_mismatch` 告警，直到角色被正确迁移。
 
 - 绑定角色有排队/执行中任务时拒绝改绑。
 - 连接器按角色启动；Codex 每个角色一个进程。Qoder 原生扩展的 `agent` 默认是 `"*"`，会轮询所有 `qoder_native` 绑定，因此同一个 Qoder 应用里的 frontend/backend 两个聊天可以同时被唤醒。旧值（单个角色名）仍然兼容。

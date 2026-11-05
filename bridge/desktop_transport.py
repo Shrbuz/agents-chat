@@ -147,37 +147,126 @@ class DesktopHub:
                 raise
             self.cv.notify_all()
 
-    def dispatch(self, task, binding, prompt, cancelled, stop, interrupt_on_timeout=True):
+    @staticmethod
+    def _result(state, summary, *, delivered, cancel_requested=False,
+                cancel_acknowledged=False, error=None, detached=False, session_id=None,
+                notification=False):
+        result = {"summary": summary, "run_delivered": bool(delivered),
+                  "cancel_requested": bool(cancel_requested),
+                  "cancel_acknowledged": bool(cancel_acknowledged)}
+        if error:
+            result["error"] = error
+        if detached:
+            result["detached"] = True
+        if notification:
+            result["notification"] = True
+        if session_id:
+            result["session_id"] = session_id
+        return state, result
+
+    def _request_cancel(self, job, state, error):
+        """Ask the connector to stop, and say honestly whether it acknowledged."""
+        job["action"] = "cancel"
+        job["cancel_requested"] = True
+        self.cv.notify_all()
+        acknowledged = self.cv.wait_for(lambda: job["cancel_sent"], timeout=2)
+        job["cancel_acknowledged"] = bool(acknowledged)
+        if not acknowledged:
+            # Keep the job so a late desktop_finish is accepted instead of
+            # turning an unacknowledged cancel into a second, noisy failure.
+            job["detached"] = True
+        state, result = self._result(
+            state,
+            "已请求中断目标会话，但连接器没有在时限内确认。" if not acknowledged
+            else "已请求中断目标会话，连接器已确认。",
+            delivered=job["received"], cancel_requested=True,
+            cancel_acknowledged=acknowledged, error=error,
+            detached=not acknowledged, session_id=job["session_id"])
+        result["delivery_uncertain"] = bool(job["received"])
+        return state, result
+
+    def dispatch(self, task, binding, prompt, cancelled, stop,
+                 interrupt_on_timeout=False, delivery_timeout=30, execution_timeout=180):
+        """Deliver one task without ever cancelling a chat unless asked to.
+
+        Delivery waiting and target execution are separate clocks.  A notification
+        completes as soon as the connector acknowledges the prompt; an ordinary
+        task waits for its result, but a timeout only stops the sender waiting.
+        Only ``interrupt_on_timeout`` turns that timeout into a cancel request.
+        """
         task_id = task["id"]
-        deadline = time.monotonic() + task["payload"]["timeout"]
+        delivery_timeout = max(0.1, float(delivery_timeout))
+        execution_timeout = max(0.1, float(execution_timeout))
+        start = time.monotonic()
         job = {"agent": task["target"], "session_id": binding["session_id"], "task_id": task_id,
                "nonce": str(uuid.uuid4()), "prompt": prompt, "received": False, "result": None,
-               "action": "run", "cancel_sent": False}
+               "action": "run", "cancel_sent": False, "cancel_requested": False,
+               "cancel_acknowledged": False, "detached": False,
+               "notify": task["payload"].get("kind") == "agent_chat_wakeup",
+               "interrupt_on_timeout": bool(interrupt_on_timeout),
+               "delivery_timeout": delivery_timeout,
+               "execution_timeout": execution_timeout,
+               "received_at": None}
         with self.cv:
             self.jobs[task_id] = job
             self.cv.notify_all()
+            execution_deadline = None
             try:
                 while not job["result"]:
-                    if stop.is_set() or cancelled(task_id) or time.monotonic() >= deadline:
-                        # Termination requests are cooperative; no claim of rollback or process kill.
-                        state = "interrupted" if stop.is_set() else "cancelled" if cancelled(task_id) else "timed_out"
-                        expired = time.monotonic() >= deadline and not stop.is_set() and not cancelled(task_id)
-                        if expired and not interrupt_on_timeout:
-                            # The sender only asked for a notification; the chat is
-                            # still working and must not be interrupted for it.
-                            return state, {"error": "desktop_" + state,
-                                           "summary": "通知已送达，执行仍在继续（未打断）。",
-                                           "session_id": binding["session_id"],
-                                           "delivery_uncertain": job["received"]}
-                        job["action"] = "cancel"
-                        self.cv.notify_all()
-                        self.cv.wait_for(lambda: job["cancel_sent"], timeout=2)
-                        return state, {"error": "desktop_" + state, "summary": "Desktop execution may continue until interruption is acknowledged.",
-                                       "session_id": binding["session_id"], "delivery_uncertain": job["received"]}
-                    self.cv.wait(timeout=min(0.2, max(0, deadline - time.monotonic())))
+                    now = time.monotonic()
+                    if stop.is_set():
+                        # Stopping the hub stops the sender's wait. It is not a
+                        # request to kill a chat that a person is still using.
+                        if job["received"]:
+                            job["detached"] = True
+                        return self._result(
+                            "interrupted", "中枢已停止等待；目标会话可能仍在继续。",
+                            delivered=job["received"], detached=job["received"],
+                            error="desktop_interrupted", session_id=binding["session_id"])
+                    if cancelled(task_id):
+                        return self._request_cancel(job, "cancelled", "desktop_cancelled")
+                    if not job["received"]:
+                        if now >= start + delivery_timeout:
+                            return self._result(
+                                "timed_out",
+                                "目标聊天在投递时限内没有领取任务；已停止发送方等待，未启动或中断目标执行。",
+                                delivered=False, error="desktop_delivery_timeout",
+                                session_id=binding["session_id"])
+                    else:
+                        if job["notify"]:
+                            # A notification is complete once the chat has it.
+                            # The target keeps working on its own inbox/task.
+                            job["detached"] = True
+                            return self._result(
+                                "succeeded", "通知已投递；目标会话继续处理（未打断）。",
+                                delivered=True, detached=True, notification=True,
+                                session_id=binding["session_id"])
+                        if execution_deadline is None:
+                            execution_deadline = now + execution_timeout
+                            job["received_at"] = now
+                        if now >= execution_deadline:
+                            if job["interrupt_on_timeout"]:
+                                return self._request_cancel(job, "timed_out",
+                                                            "desktop_execution_timeout")
+                            # The sender stops waiting, but the chat is still
+                            # working. Never send a cancel action for this.
+                            job["detached"] = True
+                            return self._result(
+                                "timed_out",
+                                "等待目标执行超时；已停止发送方等待，目标会话未被打断。",
+                                delivered=True, detached=True, error="desktop_execution_timeout",
+                                session_id=binding["session_id"])
+                    if not job["received"]:
+                        next_deadline = start + delivery_timeout
+                    else:
+                        next_deadline = execution_deadline if execution_deadline is not None else now + 0.2
+                    self.cv.wait(timeout=min(0.2, max(0, next_deadline - time.monotonic())))
                 return job["result"]["state"], job["result"]["result"]
             finally:
-                self.jobs.pop(task_id, None)
+                # Detached jobs stay registered until the connector reports a
+                # late result, so that report is not mistaken for an unknown task.
+                if not job["detached"]:
+                    self.jobs.pop(task_id, None)
 
     def receive(self, agent, session_id, seconds):
         deadline = time.monotonic() + seconds
@@ -189,10 +278,12 @@ class DesktopHub:
                     if job["action"] == "cancel" and not job["cancel_sent"]:
                         job["cancel_sent"] = True
                         self.cv.notify_all()
-                        return {k: job[k] for k in ("task_id", "nonce", "action", "session_id")}
+                        return {k: job.get(k) for k in ("task_id", "nonce", "action", "session_id",
+                                                         "notify", "interrupt_on_timeout")}
                     if not job["received"]:
                         job["received"] = True  # Never redeliver after an uncertain disconnect.
-                        return {k: job[k] for k in ("task_id", "nonce", "action", "session_id", "prompt")}
+                        return {k: job.get(k) for k in ("task_id", "nonce", "action", "session_id", "prompt",
+                                                         "notify", "interrupt_on_timeout")}
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break
@@ -203,11 +294,23 @@ class DesktopHub:
         with self.cv:
             job = self.jobs.get(task_id)
             if job is None:
-                raise ValueError("desktop_task_no_longer_active")
+                # A closed notification or a timed-out task may report late.
+                # That is not a receipt error and must not fail the connector.
+                return {"accepted": False, "task_closed": True}
             if job["nonce"] != nonce or not job["received"]:
                 raise ValueError("desktop_receipt_mismatch")
+            if job.get("detached"):
+                job["detached"] = False
+                self.jobs.pop(task_id, None)
+                return {"accepted": True, "late": True, "task_closed": True}
             if job["result"] is None:
-                job["result"] = {"state": state, "result": result}
+                completed = result if isinstance(result, dict) else {"summary": str(result)}
+                completed.setdefault("run_delivered", True)
+                completed.setdefault("cancel_requested", False)
+                completed.setdefault("cancel_acknowledged", False)
+                if job["notify"]:
+                    completed.setdefault("notification", True)
+                job["result"] = {"state": state, "result": completed}
                 self.cv.notify_all()
             return {"accepted": True}
 

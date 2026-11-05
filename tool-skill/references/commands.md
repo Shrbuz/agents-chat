@@ -70,6 +70,56 @@ python CLI --project PROJECT cancel --role tester --session tester-UUID --task T
 不要生成新 ID 重复下单。claim 的幂等返回保留原 token 和原到期时间。
 body 参数和 data-file 互斥；result 必须通过 data-file 给出 evidence。
 
+## 换会话与换客户端接管
+
+同一个客户端换聊天窗口，只替换会话（不改 adapter、不重启中枢）：
+
+```text
+AgentsChat.Cli.exe --project PROJECT session takeover --role ROLE \
+  --session NEW_CHAT --transport codex_app_tools
+```
+
+换客户端接管（例如 DSH 角色由 Codex 接管）必须迁移 adapter，命令是原子的：
+
+```text
+AgentsChat.Cli.exe --project PROJECT session migrate-and-takeover --role ROLE \
+  --session NEW_CHAT --transport codex_app_tools --adapter auto
+```
+
+- `--transport` 只能是当前客户端的传输：`codex_app_tools` / `qoder_native` / `dsh_plugin`；
+  `--adapter auto` 按 transport 推导 `codex` / `qoder` / `dsh`。
+- 迁移依次完成：主配置 → `.agents-chat/project.json` → 重启中枢 → 绑定新会话 →
+  退休旧会话 → 写 `_state/active-sessions.json`；任一步失败会回滚。
+- 成功输出含 `adapter_changed`、`hub_restarted`、`active_session`、`retired_sessions`、
+  `postconditions`。`postconditions.ok` 必须为 true，且
+  `role_adapter == session_adapter == 当前客户端适配器`、`transport` 与 adapter 匹配、
+  新会话唯一活跃、旧会话全部 retired。
+- 旧命令 `session takeover` 在 adapter 与 transport 不一致时返回
+  `adapter_transport_mismatch`，不会制造半迁移状态。
+- `join --migrate-adapter` 是同一迁移流程的入口；不带该参数时，跨客户端 join 会被拒绝。
+
+## 通知与超时（中枢 CLI）
+
+只提醒对方查看收件箱时用 `notify`（别名 `wakeup`），它自动标记为
+`agent_chat_wakeup`，投递成功即完成，不等待也不中断目标执行：
+
+```text
+AgentsChat.Cli.exe --project PROJECT notify --from leader --to backend --text "看看收件箱"
+```
+
+- `send --timeout` 是目标执行等待上限；超时默认只停止发送方等待，目标会话继续工作。
+- 只有显式 `--interrupt-on-timeout` 才允许超时后发送 cancel。
+- `--delivery-timeout` 单独控制目标聊天接住消息的等待时间。
+- 任务结果带 `run_delivered`、`cancel_requested`、`cancel_acknowledged`；
+  `desktop_delivery_timeout` 与 `desktop_execution_timeout` 是两种不同的超时。
+- Windows 中文用 `--file <utf8文件>` 或 `--text-stdin`；含 U+FFFD 的文本会被拒绝。
+- agent-chat 总线里的 pending request 会在中枢启动/巡检时自动补发唤醒任务，
+  不需要手工 `send` 提醒。
+- `claim` 会唤醒 requester，`result` 会唤醒 requester，`verify`（pass/fail）
+  会唤醒 assignee；每个事件只生成一个 `agent_chat_wakeup`。
+- `health` 里看 `degraded` / `agent_chat_health`；唤醒线程异常或扫描失败时
+  不应再把它当作正常。
+
 ## 初始化别的项目
 
 ```text

@@ -33,6 +33,9 @@ def ui(action, *arguments):
 def execute(client, state, job, cancelled):
     sent = False
     attempted = False
+    # A timeout is not permission to stop the user's chat. Only an explicit
+    # interrupt request (or a real cancel) may do that.
+    interrupt = bool(job.get("interrupt_on_timeout"))
     try:
         target = job["session_id"]
         # Only operate while the user keeps the explicitly bound chat selected.
@@ -41,8 +44,20 @@ def execute(client, state, job, cancelled):
             if cancelled.wait(1):
                 return
             status = client.call("task",task_id=job["task_id"])
-            if status["state"] in ("cancelled","timed_out","interrupted","failed"):
+            task_state = status["state"]
+            if task_state == "cancelled":
                 return
+            if task_state == "interrupted":
+                result = status.get("result") or {}
+                if result.get("cancel_requested", True):
+                    return
+            if interrupt and task_state in ("timed_out", "failed"):
+                return
+            if task_state == "timed_out":
+                # The sender stopped waiting; this notification/task may still
+                # be worth delivering once the chat becomes free.
+                snapshot = ui("inspect", target)
+                continue
             snapshot = ui("inspect",target)
         directory = state / "runs" / job["task_id"]
         directory.mkdir(parents=True, exist_ok=True)
@@ -53,9 +68,20 @@ def execute(client, state, job, cancelled):
         sent = True
         while not cancelled.wait(1):
             status = client.call("task",task_id=job["task_id"])
-            if status["state"] in ("cancelled","timed_out","interrupted","failed"):
+            task_state = status["state"]
+            if task_state == "cancelled":
                 cancelled.set()
                 break
+            if task_state == "interrupted":
+                result = status.get("result") or {}
+                if result.get("cancel_requested", True):
+                    cancelled.set()
+                    break
+            if interrupt and task_state in ("timed_out", "failed"):
+                cancelled.set()
+                break
+            # A non-interrupt timeout is only the sender's waiting deadline.
+            # Keep the Qoder round running and report the result late.
             snapshot = ui("inspect", target)
             if snapshot.get("task_id") != job["task_id"]:
                 # The renderer can take time to materialize the submitted round.

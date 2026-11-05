@@ -6,6 +6,7 @@ for the role session, with no extra model polling.
 """
 import json
 from pathlib import Path
+import sys
 import threading
 import time
 
@@ -13,6 +14,9 @@ from .bus import Bus, parse_time, utc_now
 
 DELIVER = {"request", "result", "blocked", "cancel", "release", "reassign"}
 WAKEUP_SENDER = "agent-chat"
+# A failed delivery is worth retrying, but an offline connector must not grow
+# an unbounded queue of identical wakeups.
+MAX_WAKEUP_ATTEMPTS = 5
 
 
 def _helper_for(project, root):
@@ -50,6 +54,13 @@ class AgentChatBridge:
         self.stop = threading.Event()
         self.thread = None
         self.projects = self._prepare()
+        self.started_at = None
+        self.last_scan_at = None
+        self.wakeups = 0
+        self.cursor_resets = 0
+        self.last_cursor_reset = None
+        self.project_errors = {}
+        self.project_success = {}
 
     def _prepare(self):
         prepared = []
@@ -86,7 +97,71 @@ class AgentChatBridge:
     def status(self):
         return [{"id": p["id"], "bus": str(p["bus"]), "roles": len(p["roles"]),
                  "helper": str(p["helper"]) if p["helper"] else None,
-                 "open_tasks": len(self.store.bus_projection(p["id"]))} for p in self.projects]
+                 "open_tasks": len(self.store.bus_projection(p["id"])),
+                 "thread_alive": bool(self.thread and self.thread.is_alive()),
+                 "last_error": (self.project_errors.get(p["id"]) or {}).get("error")}
+                for p in self.projects]
+
+    def health(self):
+        """Wakeup-chain health, separate from adapter worker liveness.
+
+        ``workers_alive`` only counts adapter workers; a dead or failing
+        agent-chat watcher used to look perfectly healthy.
+        """
+        alive = bool(self.thread and self.thread.is_alive())
+        projects = []
+        degraded = bool(self.projects) and not alive
+        for project in self.projects:
+            pid = project["id"]
+            error = self.project_errors.get(pid)
+            success = self.project_success.get(pid, 0)
+            project_degraded = bool(error and error.get("at", 0) > success)
+            degraded = degraded or project_degraded
+            projects.append({
+                "id": pid,
+                "thread_alive": alive,
+                "degraded": project_degraded,
+                "last_success_at": success or None,
+                "last_error": (error or {}).get("error"),
+                "last_error_at": (error or {}).get("at"),
+            })
+        fatal = self.project_errors.get("*")
+        return {
+            "started": self.thread is not None,
+            "thread_alive": alive,
+            "ok": (not self.projects) or (alive and not degraded),
+            "degraded": degraded,
+            "started_at": self.started_at,
+            "last_scan_at": self.last_scan_at,
+            "last_error": (fatal or {}).get("error"),
+            "wakeups": self.wakeups,
+            "cursor_resets": self.cursor_resets,
+            "last_cursor_reset": self.last_cursor_reset,
+            "projects": projects,
+        }
+
+    def _record_error(self, project_id, exc):
+        self.project_errors[project_id] = {"at": time.time(), "error": str(exc)[:300]}
+        try:
+            sys.stderr.write("agents-chat: agent-chat wakeup error [" + project_id + "]: "
+                             + str(exc)[:300] + "\n")
+            sys.stderr.flush()
+        except OSError:
+            pass
+
+    def _record_success(self, project_id):
+        self.project_success[project_id] = time.time()
+
+    def _record_cursor_reset(self, project_id, bus_role, old, new):
+        self.cursor_resets += 1
+        self.last_cursor_reset = {"project": project_id, "role": bus_role,
+                                  "old": old, "new": new, "at": time.time()}
+        try:
+            sys.stderr.write("agents-chat: resetting stale bus cursor for " + project_id + "/"
+                             + bus_role + ": " + str(old) + " -> " + str(new) + "\n")
+            sys.stderr.flush()
+        except OSError:
+            pass
 
     def projection(self, project=None, include_closed=False):
         """Read-only task view derived from the bus log."""
@@ -95,7 +170,18 @@ class AgentChatBridge:
     def start(self):
         if not self.projects:
             return
+        self.started_at = time.time()
         self._prime_cursors()
+        # Priming skips on-disk history, which is correct for delivered events.
+        # A request that is still pending and has no wakeup task, however, must
+        # not stay invisible just because it predates this hub process.
+        for project in self.projects:
+            try:
+                self._reconcile_pending(project)
+                self._record_success(project["id"])
+            except Exception as exc:
+                self._record_error(project["id"], exc)
+                continue
         self.thread = threading.Thread(target=self._loop, name="agent-chat-bridge", daemon=True)
         self.thread.start()
 
@@ -108,15 +194,30 @@ class AgentChatBridge:
         return project + ":" + bus_role
 
     def _prime_cursors(self):
-        """Skip pre-existing history on first sight; cursors live in the store."""
+        """Skip history, but never let a stale high-water mark hide a rebuilt bus.
+
+        A cursor is a sequence filename.  If someone rebuilds/replaces the bus,
+        its sequences restart at 1 while the stored cursor may still be at 579;
+        every new event then compares smaller and is silently skipped forever.
+        """
         for project in self.projects:
-            if self.store.bus_cursor(project["id"]):
-                continue
+            raw = self.store.bus_cursor(project["id"])
+            stored = self._cursors(project["id"], project["roles"].keys())
             latest = {}
             for bus_role, role in project["roles"].items():
                 names = [path.name for path in project["bus"].glob(role["directory"] + "/*.json")]
                 latest[bus_role] = max(names) if names else ""
-            self.store.set_bus_cursor(project["id"], json.dumps(latest, sort_keys=True))
+            if not raw:
+                self.store.set_bus_cursor(project["id"], json.dumps(latest, sort_keys=True))
+                continue
+            updated = dict(stored)
+            for bus_role, cursor in stored.items():
+                newest = latest.get(bus_role, "")
+                if cursor and (not newest or cursor > newest):
+                    updated[bus_role] = newest
+                    self._record_cursor_reset(project["id"], bus_role, cursor, newest)
+            if updated != stored:
+                self.store.set_bus_cursor(project["id"], json.dumps(updated, sort_keys=True))
 
     def _cursors(self, project_id, bus_roles):
         """Per-role cursors; an old single-string cursor seeds every role."""
@@ -145,19 +246,35 @@ class AgentChatBridge:
 
     def _loop(self):
         ticks = 0
-        while not self.stop.wait(1.5):
-            ticks += 1
-            for project in self.projects:
-                try:
-                    self._scan(project)
-                except Exception:
-                    # A malformed or concurrently rewritten event must not kill the watcher.
-                    continue
-                if ticks % 40 == 0:
+        try:
+            while not self.stop.wait(1.5):
+                ticks += 1
+                for project in self.projects:
+                    project_id = project["id"]
                     try:
-                        self._renew_leases(project)
-                    except Exception:
+                        self._scan(project)
+                        self._record_success(project_id)
+                    except Exception as exc:
+                        # A malformed or concurrently rewritten event must not
+                        # kill the watcher, but it must not be invisible either.
+                        self._record_error(project_id, exc)
                         continue
+                    if ticks % 40 == 0:
+                        try:
+                            self._reconcile_pending(project)
+                            self._record_success(project_id)
+                        except Exception as exc:
+                            self._record_error(project_id, exc)
+                        try:
+                            self._renew_leases(project)
+                        except Exception as exc:
+                            self._record_error(project_id, exc)
+                self.last_scan_at = time.time()
+        except BaseException as exc:
+            # Do not let the watcher die silently; health() exposes this as a
+            # dead/degraded wakeup thread instead of looking like worker health.
+            self._record_error("*", exc)
+            return
 
     def _renew_leases(self, project):
         """Keep a desktop session's claim alive while that session is still there.
@@ -195,10 +312,22 @@ class AgentChatBridge:
     def _scan(self, project):
         project_id = project["id"]
         cursors = self._cursors(project_id, project["roles"].keys())
+        reset = False
         for bus_role, role in project["roles"].items():
             cursor = cursors[bus_role]
             directory = project["bus"] / role["directory"]
-            for path in sorted(directory.glob("*.json")):
+            paths = sorted(directory.glob("*.json"))
+            newest = paths[-1].name if paths else ""
+            if cursor and (not newest or cursor > newest):
+                # The bus was rebuilt/replaced and its sequence restarted.
+                # Do not replay the old files; checkpoint at the new tail and
+                # let reconcile wake the latest open events.
+                self._set_cursor(project_id, bus_role, newest)
+                self._record_cursor_reset(project_id, bus_role, cursor, newest)
+                cursor = newest
+                cursors[bus_role] = newest
+                reset = True
+            for path in paths:
                 if path.name <= cursor:
                     continue
                 try:
@@ -212,19 +341,93 @@ class AgentChatBridge:
                     self._set_cursor(project_id, bus_role, path.name)
                     cursor = path.name
                     continue
-                if self.store.has_pending(role["address"]):
-                    # Only this role waits: the cursor for it stays put so the event
-                    # is retried, while other roles keep being woken.
-                    break
-                prompt = self._prompt(project, bus_role, role, path, event, action)
-                payload = {"prompt": prompt, "timeout": 1800, "context": [], "reply_mode": "mailbox",
-                           "queue_ttl": 3600, "notify": False, "kind": "agent_chat_wakeup"}
-                self.store.enqueue(WAKEUP_SENDER, role["address"], "agentchat:" + str(event.get("message_id") or path.name),
-                                   payload)
+                # Do not block the wakeup on unrelated work for the role.  A
+                # long-running desktop task used to make the cursor sit here
+                # forever, so a new request never produced its agent-chat wakeup.
+                self._enqueue_wakeup(project, bus_role, role, event, action)
                 self._set_cursor(project_id, bus_role, path.name)
                 cursor = path.name
                 self.notify()
+        if reset:
+            self._reconcile_pending(project)
+            self._record_success(project_id)
         self._sync_projection(project)
+
+    def _enqueue_wakeup(self, project, bus_role, role, event, action):
+        base = "agentchat:" + str(event.get("message_id") or event.get("task_id"))
+        existing = self.store.latest_task_by_key_prefix(WAKEUP_SENDER, base)
+        if existing is not None and existing["state"] in ("queued", "running", "succeeded"):
+            return existing
+        attempts = self.store.count_tasks_by_key_prefix(WAKEUP_SENDER, base)
+        if attempts >= MAX_WAKEUP_ATTEMPTS:
+            return existing
+        key = base if existing is None else base + ":retry:" + str(time.time_ns())
+        prompt = self._prompt(project, bus_role, role, None, event, action)
+        payload = {"prompt": prompt, "timeout": 1800, "delivery_timeout": 30,
+                   "context": [], "reply_mode": "mailbox", "queue_ttl": 3600,
+                   "notify": False, "kind": "agent_chat_wakeup",
+                   "interrupt_on_timeout": False}
+        task_id, duplicate = self.store.enqueue(WAKEUP_SENDER, role["address"], key, payload)
+        if not duplicate:
+            self.wakeups += 1
+        return self.store.get(task_id)
+
+    def _reconcile_pending(self, project):
+        """Wake a task whose latest bus event asks for action but has no wakeup.
+
+        The cursor keeps normal scanning cheap; this safety pass makes a missed
+        event (hub restart, a wakeup blocked behind another task, a crash between
+        the cursor write and enqueue) recoverable without replaying old history.
+        """
+        try:
+            events, tasks = Bus(project["bus"]).load()
+        except (OSError, ValueError):
+            return
+        latest = {}
+        for event in events:
+            latest[event["task_id"]] = event
+        cursors = self._cursors(project["id"], project["roles"].keys())
+        for task_id, event in latest.items():
+            task = tasks.get(task_id)
+            if not task:
+                continue
+            bus_role = event.get("to")
+            role = project["roles"].get(bus_role)
+            if not role:
+                continue
+            action = self._reconcile_action(event, task)
+            if not action:
+                continue
+            self._enqueue_wakeup(project, bus_role, role, event, action)
+            name = f"{event.get('sequence', 0):08d}_{event.get('message_id', '')}.json"
+            if name > cursors.get(bus_role, ""):
+                self._set_cursor(project["id"], bus_role, name)
+                cursors[bus_role] = name
+            self.notify()
+
+    @staticmethod
+    def _reconcile_action(event, task):
+        """Only the latest event matters; only open states deserve a wakeup."""
+        kind = event.get("type")
+        status = task.get("status")
+        data = event.get("data") or {}
+        if kind == "request" and status == "pending":
+            return "request"
+        if kind == "claim" and status == "in_progress":
+            return "claim"
+        if kind == "result" and status == "resolved":
+            return "result"
+        if kind == "blocked" and status == "blocked":
+            return "blocked"
+        if kind == "release" and status == "pending":
+            return "release"
+        if kind == "reassign" and status == "pending":
+            return "reassign"
+        if kind == "verify" and data.get("outcome") == "pass" and status == "closed":
+            return "verify_pass"
+        if kind == "verify" and data.get("outcome") == "fail" and status == "pending":
+            return "verify_fail"
+        return False
 
     def _sync_projection(self, project):
         """Mirror replayed task state into the store; the bus remains authoritative."""
@@ -238,9 +441,9 @@ class AgentChatBridge:
     def _action(self, project_id, bus_role, event):
         """Decide whether an event deserves a wakeup at all.
 
-        A wakeup costs one full model turn, so events that need no action stay
-        on disk only: a passed verification, or a cancellation of work nobody
-        had claimed.
+        The requester is told when its work is claimed or finished; the assignee
+        is told on request, verify pass and verify fail.  A cancellation of work
+        nobody claimed stays on disk only.
         """
         if not isinstance(event, dict):
             return False
@@ -250,8 +453,10 @@ class AgentChatBridge:
             return False
         kind = event.get("type")
         if kind == "verify":
-            # Passing needs no action; failing must wake the assignee.
-            return "verify_fail" if (event.get("data") or {}).get("outcome") == "fail" else False
+            return ("verify_pass" if (event.get("data") or {}).get("outcome") == "pass"
+                    else "verify_fail")
+        if kind == "claim":
+            return "claim"
         if kind == "cancel":
             # Stop someone who is working; an unclaimed cancel is just a note.
             return kind if self._task_status(project_id, event.get("task_id")) in ("in_progress", "blocked") else False
@@ -278,7 +483,9 @@ class AgentChatBridge:
         # a result wants a verify. Saying "领取" for a result is simply wrong.
         hint = {
             "request": "请用 claim 领取并处理，完成后用 result 回传结果。",
+            "claim": "对方已领取任务，查看即可。",
             "result": "查看即可；需要确认时用 verify 通过或驳回。",
+            "verify_pass": "验收已通过，查看即可。",
             "verify_fail": "这是被驳回的验收，请处理问题后重新 result。",
             "blocked": "对方报告了阻塞，查看后决定是继续还是 reassign。",
             "cancel": "任务已取消，查看即可。",
@@ -294,8 +501,10 @@ class AgentChatBridge:
 
     def _bus_session(self, project, bus_role):
         """The session name this role already uses on the bus, if it has one."""
+        role = project["roles"].get(bus_role) or {}
+        local_role = role.get("local_role") or bus_role
         try:
-            sessions = self.store.list_sessions(project=project["id"], role=bus_role)
+            sessions = self.store.list_sessions(project=project["id"], role=local_role)
         except Exception:
             return None
         for item in sessions:

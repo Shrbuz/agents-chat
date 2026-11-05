@@ -233,6 +233,56 @@ class IntegrationTests(unittest.TestCase):
         self.assertTrue(any(role["address"] == "review" for project in roles["projects"] for role in project["roles"]))
         self.client.call("session_remove", session="review-mcp-1")
 
+    def test_cli_text_and_stdin_preserve_unicode(self):
+        text = "中文测试 ✅"
+        key = str(uuid.uuid4())
+        proc = subprocess.run([
+            sys.executable, str(ROOT / "bridge.py"), "--state", str(self.state),
+            "--config", str(self.config), "send", "--from", "review", "--to", "success",
+            "--key", key, "--text", text,
+        ], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(proc.returncode, 0, proc.stderr or proc.stdout)
+        task_id = json.loads(proc.stdout)["task_id"]
+        self.client.wait(task_id, 10)
+        stored = Store(self.state / "bridge.sqlite3").get(task_id)["payload"]["prompt"]
+        self.assertEqual(stored, text)
+
+        stdin_key = str(uuid.uuid4())
+        proc = subprocess.run([
+            sys.executable, str(ROOT / "bridge.py"), "--state", str(self.state),
+            "--config", str(self.config), "send", "--from", "review", "--to", "success",
+            "--key", stdin_key, "--text-stdin",
+        ], input=text, capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(proc.returncode, 0, proc.stderr or proc.stdout)
+        stdin_task = json.loads(proc.stdout)["task_id"]
+        self.client.wait(stdin_task, 10)
+        stored = Store(self.state / "bridge.sqlite3").get(stdin_task)["payload"]["prompt"]
+        self.assertEqual(stored, text)
+
+    def test_cli_refuses_lossy_text_instead_of_storing_mojibake(self):
+        proc = subprocess.run([
+            sys.executable, str(ROOT / "bridge.py"), "--state", str(self.state),
+            "--config", str(self.config), "send", "--from", "review", "--to", "success",
+            "--key", str(uuid.uuid4()), "--text", "坏 \ufffd",
+        ], capture_output=True, text=True, encoding="utf-8")
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("text_encoding_loss", proc.stderr)
+
+    def test_notify_command_sets_wakeup_kind_and_never_interrupts(self):
+        proc = subprocess.run([
+            sys.executable, str(ROOT / "bridge.py"), "--state", str(self.state),
+            "--config", str(self.config), "notify", "--from", "review", "--to", "success",
+            "--key", "notify-" + str(uuid.uuid4()), "--text", "看看收件箱",
+        ], capture_output=True, text=True, encoding="utf-8")
+        self.assertEqual(proc.returncode, 0, proc.stderr or proc.stdout)
+        result = json.loads(proc.stdout)
+        self.assertTrue(result["notification"])
+        self.client.wait(result["task_id"], 10)
+        payload = Store(self.state / "bridge.sqlite3").get(result["task_id"])["payload"]
+        self.assertEqual(payload["kind"], "agent_chat_wakeup")
+        self.assertFalse(payload["interrupt_on_timeout"])
+        self.assertFalse(payload["notify"])
+
     def test_second_broker_cannot_steal_queue(self):
         with self.assertRaisesRegex(RuntimeError, "already_running"):
             Broker(self.state, read_config(self.config))

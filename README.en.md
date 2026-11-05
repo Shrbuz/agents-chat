@@ -4,7 +4,7 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.6.8-blue)
+![Version](https://img.shields.io/badge/version-0.6.11-blue)
 
 Let several agent chats on one machine hand work to each other, return results automatically, and verify them. A role in a project (`leader`, `frontend`, `tester`, …) is a collaboration seat; tasks are routed by role, so nobody has to copy text between two chat windows.
 
@@ -111,11 +111,27 @@ One request always follows one path; there is no "two systems" for the user to a
 
 The skill detects which case applies and picks one without asking the user.
 
+### A notification is not a cancellable execution
+
+A normal `send --timeout` is how long the sender waits for the **target to finish**, not permission to kill the target chat. By default a timeout only stops the sender waiting; the target keeps working. Only an explicit `--interrupt-on-timeout` sends a cancel request. `--delivery-timeout` separately controls how long to wait for the chat to accept the prompt.
+
+To remind a role to check its inbox, use the dedicated `notify` (alias `wakeup`). It is marked `agent_chat_wakeup`, completes on delivery, and never waits for or interrupts execution:
+
+```powershell
+& $cli --project alpha notify --from backend --to frontend --text "check your inbox"
+```
+
+Results report `run_delivered`, `cancel_requested` and `cancel_acknowledged`; `desktop_delivery_timeout` and `desktop_execution_timeout` are distinct states.
+
+On Windows, pass CJK text with `--file` (UTF-8) or `--text-stdin`; text already containing U+FFFD is rejected instead of being stored as mojibake.
+
 ---
 
 ## File bus
 
 Once a project is linked to an `agent_chat` bus, the hub implements the same protocol natively: events are append-only JSON files, guarded by an OS file lock on `_state/bus.lock`, written via temp file + fsync + atomic rename, with task state rebuilt by replaying events.
+
+The wakeup chain now self-checks: if the bus was rebuilt and its sequence restarted at 1 while the stored cursor still points at an old high sequence, startup/periodic scans reset the cursor and reconcile tasks that still need action. `health` returns `degraded` and `agent_chat_health`; a dead or failing wakeup watcher is shown in the tray as **⚠ wakeup chain degraded**, instead of being hidden behind `workers_alive`.
 
 ```powershell
 $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
@@ -142,16 +158,29 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 
 The next session runs `bus show <task-id>` to read the full event chain, then `claim` takes effect at once.
 
-### Hand a role over to another chat
+### Switch chats / hand a role to another client
 
-When a role moves to a new chat window, take it over explicitly so the old session loses the right to claim:
+Two different actions: **switch session** only replaces the chat and keeps the adapter; **take over a role** means the current client owns the whole role, so a client-type change also migrates the adapter.
+
+Same client, new chat window (no adapter rewrite, no hub restart):
 
 ```powershell
 & $cli --project alpha session takeover --role frontend --session <new-session-id> --transport qoder_native
 & $cli --project alpha session retire   --session <old-session-id>
 ```
 
-The tray status window has a **Switch session…** button too: pick a role, online sessions come first and history after, and you can paste a session id directly.
+Different client (for example a DSH tester taken over by Codex) must use the atomic migration:
+
+```powershell
+& $cli --project alpha session migrate-and-takeover --role tester `
+    --session <current-session-id> --transport codex_app_tools --adapter auto
+```
+
+- `--adapter auto` derives the target: `codex_app_tools→codex`, `qoder_native→qoder`, `dsh_plugin→dsh`.
+- The migration updates the main config, `.agents-chat/project.json`, restarts the hub, binds the new session, retires the old sessions and rewrites `active-sessions`; any failure rolls back.
+- It returns `adapter_changed`, `hub_restarted`, `active_session`, `retired_sessions` and `postconditions`.
+- The old `session takeover` returns `adapter_transport_mismatch` instead of leaving a half-migrated role.
+- The tray marks mismatched roles with **⚠ mismatch** (red row plus a count in the header); the **Switch session…** button remains available.
 
 ### A damaged message no longer stops everyone
 

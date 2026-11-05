@@ -15,6 +15,8 @@ Agents Chat 在本机后台常驻，统一管理多个项目。每个项目有�
 2. 返回 `hub: offline`（或 `broker_not_running`）→ 跑 `AgentsChat.Cli.exe start`。这个命令幂等，已在运行会直接返回状态；
 3. 启动成功后一句话告诉用户「Agents Chat 后台已启动」，然后继续干活。**不要**把启动这件事变成让用户做的手工步骤，也不要建议他们加开机自启或手动开托盘。
 
+如果 `health` 返回 `degraded=true` 或 `agent_chat_health.ok=false`，说明文件总线唤醒链路有问题（不是 adapter worker 的问题）。不要继续假设“在线会话会自动收到收件箱提醒”；先看 `agent_chat_health.last_error` 和 broker 日志，必要时重启中枢让它补扫未唤醒事件。
+
 **主动提醒**：如果当前项目以前用过 Agents Chat（存在 `agent_chat/project.json`，或中枢配置里登记过该项目），而用户这次没有提到协作——先把主线任务做完，最后问一句：
 
 > 这个项目之前用 Agents Chat 做过协作，要我现在把后台拉起来吗？
@@ -70,6 +72,14 @@ Agents Chat 在本机后台常驻，统一管理多个项目。每个项目有�
 
 必须带验收条件——没有验收条件的任务不算任务。保存返回的 `task_id`。
 
+只提醒对方查看收件箱、不要把提醒当成任务执行时，用专门的 `notify`（别名 `wakeup`）。它会自动设置 `agent_chat_wakeup`，投递成功即结束，**不等待也不会中断**目标聊天：
+
+```powershell
+& $cli --project <项目> notify --from <自己> --to <目标角色> --text "看看收件箱"
+```
+
+`send --timeout` 超时默认只停止发送方等待，不会取消目标聊天；只有显式 `--interrupt-on-timeout` 才授权中断。`--delivery-timeout` 单独控制投递等待。任务结果里的 `run_delivered` / `cancel_requested` / `cancel_acknowledged` 用来说明实际发生了什么。Windows 中文优先用 `--file <utf8文件>` 或 `--text-stdin`。
+
 **“看看 <角色> 那单完成没 / 验收一下”**
 
 ```powershell
@@ -88,6 +98,8 @@ Agents Chat 在本机后台常驻，统一管理多个项目。每个项目有�
 ```
 
 Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线。识别不到时用 `--session <聊天ID>` 显式指定。绑定后任务投递到这个聊天，结果仍回发起角色。
+
+`join` 只负责“同一个客户端内绑定会话”。如果角色的 `adapter` 属于另一个客户端（例如 `dsh` 角色要在 Codex 里承担），`join` 会拒绝并返回 `adapter_transport_mismatch`——那是**接管**，不是绑定，必须走下一节的 `migrate-and-takeover`。
 
 ## 总线模式下的完整流程
 
@@ -134,20 +146,47 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 - 用户只在他打开的聊天里看到消息，所以**不需要“静音”机制**，也不要替用户决定该看哪个聊天；
 - 只有真正需要用户拍板（缺信息、缺授权、两个方案要二选一）时，才在用户能看到的聊天里提一个问题。
 
-## 换会话 / 结束会话（takeover / retire）
+## 换会话 / 换客户端接管（takeover / migrate-and-takeover / retire）
 
-同一个角色换了聊天窗口时，**必须显式接管**，否则总线会继续把活算在旧会话头上：
+同一个角色换聊天时，**必须显式接管**，否则总线会继续把活算在旧会话头上。先分清两件事：
 
-```text
-session takeover --role <角色> --session <新会话ID> --transport dsh_plugin
-session retire   --session <旧会话ID>
+| 场景 | 语义 | 命令 |
+| --- | --- | --- |
+| 同一个客户端换聊天窗口（Codex → Codex） | 只替换会话 | `session takeover` |
+| 换客户端接管（DSH → Codex、Codex → DSH） | 角色所有权连同适配器一起迁移 | `session migrate-and-takeover` |
+
+**同一个客户端换会话**（不重写适配器，也不重启中枢）：
+
+```powershell
+& $cli --project <项目> session takeover --role <角色> --session <新会话ID> --transport codex_app_tools
+& $cli --project <项目> session retire   --session <旧会话ID>
 ```
 
-- `takeover` 一步完成：绑定到新会话、把该角色其它会话标记 retired、并把「角色 → 活跃会话」写进总线 `_state/active-sessions.json`；
-- 之后 `claim` 会校验活跃会话：旧会话再想领，会被拒绝并提示当前活跃会话是谁；
-- 托盘状态窗口里有 **「切换会话…」** 按钮：选中角色 → 在线会话排在前面、历史在后，也可以直接粘贴会话 ID。
+**跨客户端接管**（原子操作：改主配置 → 改 `.agents-chat/project.json` → 重启中枢 → 绑定新会话 → 退休旧会话 → 更新 `active-sessions`）：
 
-没有 hub 的项目（没有 `_state/active-sessions.json`）不做这个校验，行为与以前一致。
+```powershell
+& $cli --project <项目> session migrate-and-takeover --role <角色> `
+    --session <当前会话ID> --transport codex_app_tools --adapter auto
+```
+
+- transport 必须来自当前客户端：Codex = `codex_app_tools`，Qoder = `qoder_native`，DSH = `dsh_plugin`；`--adapter auto` 会据此推出 `codex` / `qoder` / `dsh`。
+- 任一步失败都会回滚配置、项目入口、绑定和旧会话；命令以非零退出，**不要**在同一个角色上补跑旧的 `session takeover`。
+- 成功返回 `adapter_changed`、`hub_restarted`、`active_session`、`retired_sessions`、`postconditions`。
+- 只换同客户端会话时 `adapter_changed=false`、`hub_restarted=false`，这是正确行为。
+- 托盘状态窗口会为 adapter/transport 不一致的角色显示 **⚠ 不一致**（红色行 + 顶部计数）；看到它不要继续派活，先按本节修复。
+
+### 宣布接管完成前必须验证（硬门槛）
+
+只有下面全部成立，才能对用户说“已接管”：
+
+1. `postconditions.ok == true`；
+2. `postconditions.role_adapter` **等于当前客户端适配器**，且 `role list` 里该角色的 `adapter` 与它一致；
+3. `postconditions.session_adapter == postconditions.role_adapter`；
+4. `postconditions.transport` 与适配器匹配（`codex_app_tools↔codex`、`qoder_native↔qoder`、`dsh_plugin↔dsh`）；
+5. `postconditions.active_session == <当前会话ID>`；
+6. `postconditions.checks.single_active_session == true` 且 `checks.old_sessions_retired == true`，`retired_sessions` 覆盖旧会话。
+
+任一条件不满足，或命令返回 `adapter_transport_mismatch` / `takeover_postconditions_failed`，都视为**未接管**：报告失败并保留现场，不要谎报成功。
 
 ## 换人接手（release / reassign）
 
@@ -183,11 +222,24 @@ session retire   --session <旧会话ID>
 - 没说 → 读项目里 `.agents-chat/project.json` 的 `roles`，结合聊天标题和最近几条消息判断；能确定就直接用，并在回复里说明“我按 frontend 接管”；
 - 仍然判断不出 → **只问一次**，把项目里的角色列出来让他选一个。不要反复猜，也不要自己编一个不存在的角色。
 
-**2. 绑定**
+**2. 接管（先判断客户端是否变化）**
+
+先看该角色的 `adapter`（`role list` 或 `.agents-chat/project.json`）：
+
+- 与当前客户端相同（Codex 角色在 Codex、DSH 角色在 DSH）→ 只换会话，用 `session takeover`（它会把旧会话标记 retired）；只有该角色从未绑定过聊天时才用 `join`：
 
 ```powershell
-& $cli --project <项目> join --role <角色>
+& $cli --project <项目> session takeover --role <角色> --session <当前会话ID> --transport <当前客户端transport>
 ```
+
+- 与当前客户端不同（例如在 Codex 里接管 `dsh` 的 tester）→ **必须迁移适配器**，不要用 `join` 或旧 `takeover` 硬绑：
+
+```powershell
+& $cli --project <项目> session migrate-and-takeover --role <角色> `
+    --session <当前会话ID> --transport codex_app_tools --adapter auto
+```
+
+拿到结果后，按上一节「宣布接管完成前必须验证」的 6 条逐条核对 `postconditions`；不满足就停下来报告失败，不要继续派活。
 
 **3. 检查遗留（必须做）**
 

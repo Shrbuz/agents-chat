@@ -30,6 +30,41 @@ ROLE_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$")
 SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 ADAPTERS = ("codex", "qoder", "codebuddy", "dsh", "fixture")
 
+# A desktop transport names the client that owns the chat.  Keeping this map in
+# one place is what lets takeover refuse a half migration instead of writing an
+# adapter that no connector can ever serve.
+ADAPTER_TRANSPORTS = {
+    "codex": {"codex_app_tools"},
+    "qoder": {"qoder_accessibility", "qoder_extension", "qoder_native"},
+    "dsh": {"dsh_plugin"},
+    # The fixture adapter exists for tests and accepts every desktop transport.
+    "fixture": {"codex_app_tools", "qoder_accessibility", "qoder_extension",
+                "qoder_native", "dsh_plugin"},
+}
+TRANSPORT_ADAPTERS = {
+    "codex_app_tools": "codex",
+    "qoder_accessibility": "qoder",
+    "qoder_extension": "qoder",
+    "qoder_native": "qoder",
+    "dsh_plugin": "dsh",
+}
+DEFAULT_TRANSPORTS = {"codex": "codex_app_tools", "qoder": "qoder_native",
+                      "dsh": "dsh_plugin", "fixture": "codex_app_tools"}
+
+
+def adapter_for_transport(transport):
+    """The adapter a desktop transport belongs to, or None if unknown."""
+    return TRANSPORT_ADAPTERS.get(transport)
+
+
+def transport_supported(adapter, transport):
+    """Whether ``transport`` can ever serve a role configured as ``adapter``."""
+    return transport in ADAPTER_TRANSPORTS.get(adapter, set())
+
+
+def default_transport(adapter):
+    return DEFAULT_TRANSPORTS.get(adapter)
+
 
 class ConfigError(ValueError):
     """Configuration is incomplete or contradictory."""
