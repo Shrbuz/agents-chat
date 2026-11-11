@@ -25,7 +25,9 @@ class WorkBuddyTests(unittest.TestCase):
             entry.write_text("#!/usr/bin/env node\n", encoding="utf-8")
             with patch.dict(os.environ, {"WORKBUDDY_HOME": str(root), "WORKBUDDY_CLI": ""}):
                 command = discover_workbuddy_command()
-            self.assertEqual(command, [str(executable), str(entry)])
+            # Windows temp roots may be reported with an 8.3 short name while
+            # discovery returns the resolved long path; compare resolved paths.
+            self.assertEqual(command, [str(executable.resolve()), str(entry.resolve())])
 
     def test_mcp_install_merges_and_is_idempotent(self):
         with tempfile.TemporaryDirectory() as temp:
