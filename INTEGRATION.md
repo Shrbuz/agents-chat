@@ -16,7 +16,7 @@
   --role backend:codex:"API 与数据" --role frontend:qoder:"界面与交互"
 ```
 
-- 角色格式 `role[:adapter[:description]]`；adapter 支持 `codex`、`qoder`、`opencode`、`workbuddy`、`codebuddy`、`dsh`、`fixture`。
+- 角色格式 `role[:adapter[:description]]`；adapter 支持 `codex`、`qoder`、`qwen`、`kimi`、`opencode`、`workbuddy`、`codebuddy`、`dsh`、`fixture`。
 - 已经有角色默认保留；`--force` 才替换运行时配置。
 - `--no-agents` 不写 `AGENTS.md`；`--no-restart` 不自动重启后台。
 - 项目内生成：
@@ -117,6 +117,47 @@ OpenCode 使用官方 stdio MCP 与官方 CLI 的原生会话能力：
 
 连接器由 Hub 按角色监督；服务停止、会话不存在、待登录、CLI 缺失分别显示为独立状态。连接器异常退出后，只重启该角色连接器；重领未完成投递前会先检查会话中的稳定任务标记，避免重复创建或执行业务任务。
 
+### Qwen Code（实验性）
+
+Qwen Code 使用官方 `qwen serve` REST/SSE 接口。Agents Chat 不自动启动 daemon、不创建会话；先在角色项目目录启动并由用户创建会话：
+
+```powershell
+Set-Location E:\work\alpha
+qwen serve
+& $cli qwen status --session <qwen-session-id> --root E:\work\alpha
+& $cli --project alpha session migrate-and-takeover --role reviewer `
+    --session <qwen-session-id> --transport qwen_native --adapter auto
+```
+
+默认地址是 `http://127.0.0.1:4170`；自定义地址用 `QWEN_DAEMON_URL`，启用 bearer 时用 `QWEN_DAEMON_TOKEN`。连接器启动时读取 `/capabilities`，要求 v1 的 `session_status`、`session_prompt`、`session_events`、`session_transcript`、`non_blocking_prompt` 与 typed event schema；版本号不代替能力判断。
+
+每次投递先打开 `/session/:id/events`，再向 `/session/:id/prompt` 提交内容；`Agents Chat task_id` 同时作为 Qwen `idempotencyKey`，最终只接受同一 `promptId` 的 `turn_complete` / `turn_error`。恢复时先检查 transcript 中的稳定任务标记，避免重复业务执行。daemon/session/workspace 任一不匹配都会显示为离线或 degraded，不回退到新 CLI 会话。
+
+Qwen 官方目前将 daemon 标为 Experimental。trusted-loopback 模式允许本机同一用户进程以 daemon 用户权限执行代码；不要把端口暴露到不可信网络，远程使用时必须按 Qwen 文档启用认证。
+
+### Kimi Code（实验性）
+
+只接入仍在维护的 Node.js 版 Kimi Code CLI；旧 Python `kimi-cli` 已停止维护，不作为 fallback。先完成大陆区登录、确认账号拥有 Kimi Code 权限，并在角色项目目录启动官方 Web 服务：
+
+```powershell
+npm install -g @moonshot-ai/kimi-code
+kimi login --region mainland-cn
+Set-Location E:\work\alpha
+kimi web --no-open
+
+# 在 Kimi Web 中创建角色会话后，读取真实 ID
+kimi session list --cwd E:\work\alpha --json
+& $cli kimi status --session <kimi-session-id> --root E:\work\alpha
+& $cli --project alpha session migrate-and-takeover --role reviewer `
+    --session <kimi-session-id> --transport kimi_native --adapter auto
+```
+
+默认从 `~/.kimi-code/server/instances/` 发现最新回环实例，从 `~/.kimi-code/server.token` 读取 bearer；自定义实例可用 `KIMI_WEB_URL` / `KIMI_WEB_TOKEN`。`kimi_native` 只接受 `127.0.0.1` / `localhost` / `::1` 的 bearer 认证 HTTP 服务，不支持 `--dangerous-bypass-auth` 或远程地址。
+
+连接器以服务当前返回的 `/openapi.json` 和 `/asyncapi.json` 为准，要求 REST session/prompt/messages/abort 与 WebSocket protocol v2、`subscribe_v2`、`session_event` 同时存在。每次投递先订阅，再 POST prompt；只接受 `triggerPromptId` 与本次 `prompt_id` 一致的 completed/failed/cancelled turn。恢复前读取 messages 中的稳定 `Agents Chat task` 标记，避免不确定投递后重复执行；取消使用 prompt 级 `:abort`。
+
+Kimi 官方把 Server API 标为 Experimental，因此 Agents Chat 不自动启动 server、不猜 session、不把它设为默认 transport。自动角色任务使用 Kimi 的 `auto` permission override，避免无人值守时卡在审批面板；它会以当前用户权限执行工具，只能绑定可信项目。套餐无权限、模型未配置、session/workspace 不匹配都会显示为独立状态，不得宣告在线。
+
 ## 纯 HTTP
 
 `POST http://127.0.0.1:<随机端口>/call`，请求体 `{"method":"send","params":{...}}`。端口与 bearer 在状态目录 `endpoint.json`。使用附带 `Client`：
@@ -144,6 +185,8 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 ```powershell
 & $cli --project alpha join --role backend --session <codex-thread-id>
 & $cli --project alpha join --role frontend --session <qoder-chat-id> --transport qoder_native
+& $cli --project alpha join --role reviewer --session <qwen-session-id> --transport qwen_native
+& $cli --project alpha join --role reviewer --session <kimi-session-id> --transport kimi_native
 & $cli --project alpha role bind --role backend --session <id> --transport codex_app_tools
 & $cli --project alpha role unbind --role frontend
 ```
@@ -160,7 +203,7 @@ Codex 连接器还需要一次管理聊天准备的 app-tools 上下文（`codex
 旧 `session takeover` 在 adapter 与 transport 不一致时返回 `adapter_transport_mismatch`；`role list` 和托盘会显示 `adapter_transport_mismatch` 告警，直到角色被正确迁移。
 
 - 绑定角色有排队/执行中任务时拒绝改绑。
-- 连接器按角色启动；Codex 与 OpenCode 每个角色一个受 Hub 监督的进程。Qoder 原生扩展的 `agent` 默认是 `"*"`，会轮询所有 `qoder_native` 绑定，因此同一个 Qoder 应用里的 frontend/backend 两个聊天可以同时被唤醒。旧值（单个角色名）仍然兼容。
+- 连接器按角色启动；Codex、OpenCode、Qwen Code 与 Kimi Code 每个角色一个受 Hub 监督的进程。Qoder 原生扩展的 `agent` 默认是 `"*"`，会轮询所有 `qoder_native` 绑定，因此同一个 Qoder 应用里的 frontend/backend 两个聊天可以同时被唤醒。旧值（单个角色名）仍然兼容。
 - 安装器会为 Qoder 普通启动启用 `agents-chat.native`；完整退出并重新打开 Qoder 后即可连接，不要求使用 Agents Chat 专用入口。专用入口仅用于修复环境或旧安装，并会重写插件状态目录。
 - 连接器离线时明确报错，不回退 CLI；桌面任务保留原聊天上下文，不承诺 token 更低。
 

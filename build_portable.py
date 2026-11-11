@@ -57,7 +57,8 @@ def extract_python(archive, destination):
 def copy_app(destination):
     from build_exe import build_all
     build_all(ROOT)
-    for name in ("bridge.py", "desktop_link.py", "opencode_desktop_link.py", "qoder_desktop_link.py",
+    for name in ("bridge.py", "desktop_link.py", "opencode_desktop_link.py",
+                 "qwen_desktop_link.py", "kimi_desktop_link.py", "qoder_desktop_link.py",
                  "launch_qoder_native.py", "config.example.json", "README.md", "DESIGN.md", "INTEGRATION.md",
                  "VERIFICATION.md", "HANDOFF.md", "install.ps1", "uninstall.ps1", "LICENSE", "VERSION"):
         source = ROOT / name

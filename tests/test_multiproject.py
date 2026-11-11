@@ -11,6 +11,7 @@ sys.path.insert(0, str(ROOT))
 
 from bridge import onboarding
 from bridge.broker import Broker
+from bridge.bus import Bus
 from bridge.config import (ConfigError, allowed_target, find_role, normalize_config,
                            projects_summary, read_config)
 from bridge.store import Store
@@ -276,12 +277,10 @@ class AgentChatBridgeTests(unittest.TestCase):
             try:
                 time.sleep(2.0)  # first scan primes cursors and must not replay old.json
                 self.assertEqual(len(broker.agent_chat.status()), 1)
-                event = {"schema_version": 1, "project_id": "demo", "sequence": 1,
-                         "message_id": str(uuid.uuid4()), "task_id": str(uuid.uuid4()),
-                         "type": "request", "from": "frontend", "to": "backend",
-                         "data": {"title": "实现登录 API", "acceptance": ["返回 200"]}}
-                (bus / "backend_msg" / f"00000001_{event['message_id']}.json").write_text(
-                    json.dumps(event, ensure_ascii=False), encoding="utf-8")
+                event = Bus(bus).submit(
+                    "request", "frontend", "fe-1", recipient="backend",
+                    data={"title": "实现登录 API", "body": "实现并自测",
+                          "acceptance": ["返回 200"], "priority": "P1"})["event"]
                 deadline = time.monotonic() + 10
                 row = None
                 while time.monotonic() < deadline:

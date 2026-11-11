@@ -28,7 +28,7 @@ ENDPOINT_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 PROJECT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$")
 ROLE_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$")
 SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-ADAPTERS = ("codex", "qoder", "opencode", "workbuddy", "codebuddy", "dsh", "fixture")
+ADAPTERS = ("codex", "qoder", "qwen", "kimi", "opencode", "workbuddy", "codebuddy", "dsh", "fixture")
 
 # A desktop transport names the client that owns the chat.  Keeping this map in
 # one place is what lets takeover refuse a half migration instead of writing an
@@ -36,21 +36,26 @@ ADAPTERS = ("codex", "qoder", "opencode", "workbuddy", "codebuddy", "dsh", "fixt
 ADAPTER_TRANSPORTS = {
     "codex": {"codex_app_tools"},
     "qoder": {"qoder_accessibility", "qoder_extension", "qoder_native"},
+    "qwen": {"qwen_native"},
+    "kimi": {"kimi_native"},
     "opencode": {"opencode_native"},
     "dsh": {"dsh_plugin"},
     # The fixture adapter exists for tests and accepts every desktop transport.
     "fixture": {"codex_app_tools", "qoder_accessibility", "qoder_extension",
-                "qoder_native", "opencode_native", "dsh_plugin"},
+                "qoder_native", "qwen_native", "kimi_native", "opencode_native", "dsh_plugin"},
 }
 TRANSPORT_ADAPTERS = {
     "codex_app_tools": "codex",
     "qoder_accessibility": "qoder",
     "qoder_extension": "qoder",
     "qoder_native": "qoder",
+    "qwen_native": "qwen",
+    "kimi_native": "kimi",
     "opencode_native": "opencode",
     "dsh_plugin": "dsh",
 }
 DEFAULT_TRANSPORTS = {"codex": "codex_app_tools", "qoder": "qoder_native",
+                      "qwen": "qwen_native", "kimi": "kimi_native",
                       "opencode": "opencode_native", "dsh": "dsh_plugin",
                       "fixture": "codex_app_tools"}
 

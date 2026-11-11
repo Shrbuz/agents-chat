@@ -258,8 +258,13 @@ namespace AgentsChatLauncher
             get { return Projects.SelectMany(project => project.Roles); }
         }
 
-        internal int TotalRoles { get { return Roles.Count(); } }
-        internal int OnlineRoles { get { return Roles.Count(role => role.Online && !role.Mismatch); } }
+        internal IEnumerable<RoleSnapshot> CountedRoles
+        {
+            get { return Roles.Where(role => !role.IsOptionalUnbound); }
+        }
+
+        internal int TotalRoles { get { return CountedRoles.Count(); } }
+        internal int OnlineRoles { get { return CountedRoles.Count(role => role.Online && !role.Mismatch); } }
         internal int BusyRoles { get { return Roles.Count(role => role.IsWorking); } }
 
         internal static StatusSnapshot From(Dictionary<string, object> status)
@@ -302,8 +307,10 @@ namespace AgentsChatLauncher
                 }
                 snapshot.Projects.Add(project);
             }
-            snapshot.Queued = Math.Max(snapshot.Queued, snapshot.Roles.Sum(role => role.QueuedTasks));
-            snapshot.RunningTasks = Math.Max(snapshot.RunningTasks, snapshot.Roles.Sum(role => role.RunningTasks));
+            // The hub queue also contains internal wake-up deliveries. The dashboard task
+            // metrics intentionally use the per-role business activity supplied by role_activity().
+            snapshot.Queued = snapshot.Roles.Sum(role => role.QueuedTasks);
+            snapshot.RunningTasks = snapshot.Roles.Sum(role => role.RunningTasks);
             return snapshot;
         }
 
@@ -362,6 +369,15 @@ namespace AgentsChatLauncher
         internal bool IsWorking
         {
             get { return RunningTasks > 0 || ConnectionState == "busy"; }
+        }
+
+        internal bool IsOptionalUnbound
+        {
+            get
+            {
+                return Mode == "mcp_pull" && !Online && String.IsNullOrWhiteSpace(SessionId)
+                    && (ConnectionState == "unbound" || String.IsNullOrWhiteSpace(ConnectionState));
+            }
         }
 
         internal string ShortId
@@ -442,7 +458,7 @@ namespace AgentsChatLauncher
             else
             {
                 VisualState = TrayVisualState.Offline;
-                StateLabel = ConnectionText(ConnectionState);
+                StateLabel = IsOptionalUnbound ? "按需领取" : ConnectionText(ConnectionState);
             }
         }
 
@@ -622,7 +638,8 @@ namespace AgentsChatLauncher
 
     internal sealed class StatusDashboard : Control
     {
-        private const double RouteMotionSeconds = 2.2D;
+        private const double RouteMotionSeconds = 4.8D;
+        private const double PacketCycleSeconds = .72D;
         private readonly Action startStop;
         private readonly Action stopAndExit;
         private readonly Action refresh;
@@ -869,10 +886,13 @@ namespace AgentsChatLauncher
             DrawMetric(graphics, new Rectangle(contentX + (metricWidth + gap), summaryY, metricWidth, summaryHeight), "执行中",
                        Convert.ToString(Math.Max(snapshot.BusyRoles, snapshot.RunningTasks)), BusyRoleName(), false);
             DrawMetric(graphics, new Rectangle(contentX + (metricWidth + gap) * 2, summaryY, metricWidth, summaryHeight), "等待任务",
-                       Convert.ToString(snapshot.Queued), snapshot.Queued == 0 ? "队列已清空" : "等待分配", false);
+                       Convert.ToString(snapshot.Queued), snapshot.Queued == 0 ? "无待处理任务" : "等待角色处理", false);
+            string linkNote = snapshot.PendingResultWakeups > 0
+                ? snapshot.PendingResultWakeups + " 个提醒待送达"
+                : snapshot.TransportFailures > 0 ? snapshot.TransportFailures + " 次失败" : "最近轮询";
             DrawMetric(graphics, new Rectangle(contentX + (metricWidth + gap) * 3, summaryY, metricWidth, summaryHeight), "链路状态",
                        snapshot.Degraded ? "注意" : snapshot.Running ? "正常" : "离线",
-                       snapshot.TransportFailures > 0 ? snapshot.TransportFailures + " 次失败" : "最近轮询", false);
+                       linkNote, false);
 
             int mainY = summaryY + summaryHeight + 16;
             int detailX = Width - padding - rightWidth;
@@ -995,7 +1015,7 @@ namespace AgentsChatLauncher
             if (!motions.TryGetValue(address, out motion) || motion.StartedUtc == DateTime.MinValue) return false;
             double elapsed = (DateTime.UtcNow - motion.StartedUtc).TotalSeconds;
             if (elapsed < 0D || elapsed >= RouteMotionSeconds) return false;
-            progress = (float)(elapsed / RouteMotionSeconds);
+            progress = (float)((elapsed % PacketCycleSeconds) / PacketCycleSeconds);
             return true;
         }
 

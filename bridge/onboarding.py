@@ -58,6 +58,12 @@ def discover_command(adapter):
     if adapter == "opencode":
         from .opencode import discover_opencode_command
         return discover_opencode_command()
+    if adapter == "qwen":
+        from .qwen import discover_qwen_command
+        return discover_qwen_command()
+    if adapter == "kimi":
+        from .kimi import discover_kimi_command
+        return discover_kimi_command()
     if adapter == "dsh":
         # `dsh` is a cmd wrapper around the Electron launcher; the config layer
         # rejects shell wrappers, so resolve the native executable and its entry
@@ -93,6 +99,14 @@ def endpoint_for(adapter, cwd, description="", peers=None, command=None, sandbox
                               "--no-session-persistence", "--max-output-tokens", "1000",
                               "--max-model-request-retries", "0"])
     elif adapter == "opencode":
+        endpoint.update(args=[])
+    elif adapter == "qwen":
+        # The native transport drives an already-open qwen serve session.  The
+        # command remains useful for version probes and independent fallback.
+        endpoint.update(args=[])
+    elif adapter == "kimi":
+        # The native transport drives an exact session on an already-running
+        # official `kimi web` server. The CLI remains useful for version probes.
         endpoint.update(args=[])
     elif adapter == "workbuddy":
         # A custom WorkBuddy MCP cannot inject a new user message into an

@@ -52,12 +52,18 @@ namespace AgentsChatLauncher
                 Role("leader", "codex", false, "leader-send", "", now),
                 Role("tester", "codex", false, "", "tester-receive", now),
                 Role("backend", "qoder", true, "backend-send", "backend-receive", now),
-                Role("frontend", "qoder", true, "", "frontend-receive", now)
+                Role("frontend", "qoder", true, "", "frontend-receive", now),
+                D("address", "wengan-cemetery.workbuddy", "role", "workbuddy",
+                  "adapter", "workbuddy", "desktop_transport", "mcp_pull", "mode", "mcp_pull",
+                  "session_id", "", "connection_status", "unbound", "online", false,
+                  "pending", false, "queued_tasks", 0, "running_tasks", 0,
+                  "transport_health", D("consecutive_failures", 0, "pending_result_wakeups", 0))
             };
             Dictionary<string, object> status = D(
-                "health", D("degraded", false, "version", "0.7.0",
-                            "states", D("queued", 0, "running", 2),
-                            "transports", D()),
+                "health", D("degraded", true, "version", "0.7.0",
+                            "states", D("queued", 3, "running", 2),
+                            "transports", D("codex_app_tools", D("consecutive_failures", 0,
+                                                                  "pending_result_wakeups", 2))),
                 "roles", D("projects", new object[] {
                     D("id", "wengan-cemetery", "name", "wengan-cemetery", "roles", roles)
                 }));

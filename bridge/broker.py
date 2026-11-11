@@ -181,6 +181,15 @@ class Broker:
                 self.busy_cwds.add(cwd_key)
             try:
                 wakeup = task["payload"].get("kind") == "agent_chat_wakeup"
+                if wakeup:
+                    prepared_wakeup = self.agent_chat.prepare_wakeup(task)
+                    if prepared_wakeup is None:
+                        self.store.finish(
+                            task["id"], "succeeded", {
+                                "summary": "Task was already closed; stale wakeup discarded.",
+                                "discarded": True, "reason": "bus_task_closed"})
+                        continue
+                    task = prepared_wakeup
                 if (not wakeup and
                         task["created"] + task["payload"].get("queue_ttl", 3600) < time.time()):
                     state, result = "timed_out", {"error": "queue_deadline", "summary": "Expired before runtime launch."}
@@ -221,7 +230,8 @@ class Broker:
                             "runtime_missing", "app_tools_server_missing",
                             "desktop_bridge_disconnected", "connection_context_missing",
                             "opencode_service_unavailable", "opencode_session_missing",
-                            "opencode_transport")):
+                            "opencode_transport", "qwen_daemon_unavailable",
+                            "qwen_session_missing", "qwen_transport")):
                     attempts = int(task.get("attempt_count") or 0)
                     delay = 5 if result.get("error") == "desktop_chat_busy" else min(30, 2 ** min(attempts, 5))
                     self.store.requeue_wakeup(task["id"], {
@@ -411,9 +421,73 @@ class Broker:
                 self.connector_processes[agent] = process
                 threading.Thread(target=process.wait, daemon=True).start()
 
+    def _ensure_qwen_connectors(self):
+        """Start one capability-checked Qwen daemon connector per bound role."""
+        script = Path(__file__).resolve().parent.parent / "qwen_desktop_link.py"
+        if not script.is_file() or not (self.state_dir / "endpoint.json").is_file():
+            return
+        with self.connector_lock:
+            for agent, binding in list(self.desktop.bindings.items()):
+                endpoint = self.endpoints.get(agent) or {}
+                if (binding.get("transport") != "qwen_native"
+                        or endpoint.get("adapter") not in ("qwen", "fixture")):
+                    continue
+                current = self.connector_processes.get(agent)
+                if current is not None and current.poll() is None:
+                    continue
+                self.connector_processes.pop(agent, None)
+                safe = agent.replace(".", "-")
+                try:
+                    probe = SingleInstance(self.state_dir / (safe + "-desktop.lock"))
+                except RuntimeError:
+                    continue
+                probe.close()
+                log_path = self.state_dir / (safe + "-qwen.log")
+                with log_path.open("ab") as log:
+                    process = subprocess.Popen(
+                        [sys.executable, str(script), "--state", str(self.state_dir),
+                         "--agent", agent],
+                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0)
+                self.connector_processes[agent] = process
+                threading.Thread(target=process.wait, daemon=True).start()
+
+    def _ensure_kimi_connectors(self):
+        """Start one capability-checked Kimi Web connector per bound role."""
+        script = Path(__file__).resolve().parent.parent / "kimi_desktop_link.py"
+        if not script.is_file() or not (self.state_dir / "endpoint.json").is_file():
+            return
+        with self.connector_lock:
+            for agent, binding in list(self.desktop.bindings.items()):
+                endpoint = self.endpoints.get(agent) or {}
+                if (binding.get("transport") != "kimi_native"
+                        or endpoint.get("adapter") not in ("kimi", "fixture")):
+                    continue
+                current = self.connector_processes.get(agent)
+                if current is not None and current.poll() is None:
+                    continue
+                self.connector_processes.pop(agent, None)
+                safe = agent.replace(".", "-")
+                try:
+                    probe = SingleInstance(self.state_dir / (safe + "-desktop.lock"))
+                except RuntimeError:
+                    continue
+                probe.close()
+                log_path = self.state_dir / (safe + "-kimi.log")
+                with log_path.open("ab") as log:
+                    process = subprocess.Popen(
+                        [sys.executable, str(script), "--state", str(self.state_dir),
+                         "--agent", agent],
+                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0)
+                self.connector_processes[agent] = process
+                threading.Thread(target=process.wait, daemon=True).start()
+
     def _ensure_desktop_connectors(self):
         self._ensure_codex_connectors()
         self._ensure_opencode_connectors()
+        self._ensure_qwen_connectors()
+        self._ensure_kimi_connectors()
 
     def _refresh_codex_context(self, params, force=False):
         context = params.get("connection_context")
@@ -446,7 +520,7 @@ class Broker:
     def role_transport_health(self, internal):
         binding = self.desktop.bindings.get(internal) or {}
         transport = binding.get("transport")
-        if transport in ("codex_app_tools", "opencode_native"):
+        if transport in ("codex_app_tools", "opencode_native", "qwen_native", "kimi_native"):
             return self.desktop.connection_status(internal)
         if not transport:
             return {"state": "unbound", "transport": None, "online": False}
@@ -610,6 +684,10 @@ class Broker:
             transports = {
                 "codex_app_tools": self.desktop.transport_health(self.store),
                 "opencode_native": self.desktop.transport_health(self.store, "opencode_native"),
+                "qwen_native": {**self.desktop.transport_health(self.store, "qwen_native"),
+                                "experimental": True},
+                "kimi_native": {**self.desktop.transport_health(self.store, "kimi_native"),
+                                "experimental": True},
             }
             for transport in ("qoder_native", "qoder_accessibility", "qoder_extension", "dsh_plugin"):
                 transports[transport] = self.passive_transport_health(transport)
@@ -736,7 +814,7 @@ class Broker:
             if chat:
                 self.store.register_session("desktop:" + chat, endpoint["project"], endpoint["role"],
                                             endpoint["adapter"], transport, "桌面聊天绑定")
-                if transport in ("codex_app_tools", "opencode_native"):
+                if transport in ("codex_app_tools", "opencode_native", "qwen_native", "kimi_native"):
                     self._ensure_desktop_connectors()
             self.write_active_sessions(endpoint["project"])
             return {"agent": internal, "address": internal,
@@ -790,7 +868,7 @@ class Broker:
                     self.desktop.bind(internal, {"session_id": takeover_session, "transport": transport})
                 self.store.takeover_session("desktop:" + takeover_session, project_id, role_id,
                                             endpoint["adapter"], transport)
-                if transport in ("codex_app_tools", "opencode_native"):
+                if transport in ("codex_app_tools", "opencode_native", "qwen_native", "kimi_native"):
                     self._ensure_desktop_connectors()
                 self.write_active_sessions(project_id)
                 postconditions = self.takeover_postconditions(
@@ -860,7 +938,7 @@ class Broker:
             recover_received = p.get("recover_received", False)
             if type(recover_received) is not bool:
                 raise ValueError("invalid_recover_received")
-            if recover_received and binding.get("transport") != "opencode_native":
+            if recover_received and binding.get("transport") not in ("opencode_native", "qwen_native", "kimi_native"):
                 raise ValueError("recovery_not_supported_for_transport")
             try:
                 self.store.heartbeat_session("desktop:" + p["session_id"])

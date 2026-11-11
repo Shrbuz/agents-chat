@@ -12,13 +12,16 @@ python CLI --project PROJECT onboard
 python CLI --project PROJECT status --role frontend
 python CLI --project PROJECT inbox --role frontend --session frontend-UUID
 python CLI --project PROJECT mark-read --role frontend --session frontend-UUID --message MESSAGE_ID
+python CLI --project PROJECT mark-read-through-sequence --role frontend --session frontend-UUID --through-sequence SEQUENCE
 python CLI --project PROJECT show --task TASK_ID
 ```
 
 `inbox` 返回当前会话未读的消息（不含续期心跳），任务已终结也不会隐藏
 通知；最多返回 50 条，同时给出 total_unread，可以用 `--limit` 调整。
 每条消息附上当前 task_status，处理旧请求前核对该字段或 show 任务。
-只有显式 mark-read 才标记已读；该字段不会写回或改写原始事件。
+`inbox` 同时返回 `suggested_mark_read_through_sequence`；处理完本页后可用
+`mark-read-through-sequence` 可靠推进当前会话的持久游标，也可继续用
+`mark-read` 精确确认单条消息。已读状态不会写回或改写原始事件。
 `status --role` 列出分配给该角色和该角色发出的未关闭任务；需要查看
 已关闭/取消任务时加 `--include-closed`。任务列表和消息未读状态相互独立。
 
@@ -60,6 +63,8 @@ lease 默认 1800 秒，claim 可用 `--lease-seconds` 修改为 30 至 86400 �
 
 ```text
 python CLI --project PROJECT result --role backend --session backend-UUID --task TASK_ID --token TOKEN --data-file /absolute/result.json
+# 简单结果无需临时文件：
+python CLI --project PROJECT result --role backend --session backend-UUID --task TASK_ID --token TOKEN --body "完成" --evidence "测试通过"
 python CLI --project PROJECT verify --role tester --session tester-UUID --task TASK_ID --outcome pass --body "已核对本次部署并复测通过"
 python CLI --project PROJECT verify --role tester --session tester-UUID --task TASK_ID --outcome fail --body "复测仍失败，附复现信息"
 python CLI --project PROJECT cancel --role tester --session tester-UUID --task TASK_ID --body "需求已撤回"
@@ -68,7 +73,7 @@ python CLI --project PROJECT cancel --role tester --session tester-UUID --task T
 `send --message-id UUID` 是可选幂等键；同 ID 且内容相同返回原事件，
 内容不同会报错。所有后续事件均支持此参数。超时重试应复用同一 ID，
 不要生成新 ID 重复下单。claim 的幂等返回保留原 token 和原到期时间。
-body 参数和 data-file 互斥；result 必须通过 data-file 给出 evidence。
+body 参数和 data-file 互斥；result 可重复使用 `--evidence` 给出简单证据，复杂结构再通过 data-file 提交。
 
 ## 初始化别的项目
 

@@ -16,7 +16,7 @@ def namespace(**values):
         "task_id": None, "body": None, "evidence": [], "acceptance": [],
         "priority": "P2", "due_at": None, "data_file": None, "sender_role": None,
         "target_role": None, "title": None, "limit": 50, "message_id": [],
-        "outcome": None, "all": False,
+        "outcome": None, "all": False, "sequence": None,
     }
     defaults.update(values)
     return argparse.Namespace(**defaults)
@@ -86,6 +86,18 @@ class BusCliTests(unittest.TestCase):
         buscli.run(namespace(
             bus_command="mark-read", role="backend", session="be-1",
             message_id=[created["message_id"]]), self.root)
+        self.assertEqual(buscli.run(namespace(
+            bus_command="inbox", role="backend", session="be-1"), self.root)["total_unread"], 0)
+
+    def test_cli_mark_read_through_sequence(self):
+        self.request()
+        inbox = buscli.run(namespace(
+            bus_command="inbox", role="backend", session="be-1"), self.root)
+        sequence = inbox["suggested_mark_read_through_sequence"]
+        result = buscli.run(namespace(
+            bus_command="mark-read-through-sequence", role="backend",
+            session="be-1", sequence=sequence), self.root)
+        self.assertEqual(result["marked_read_through_sequence"], sequence)
         self.assertEqual(buscli.run(namespace(
             bus_command="inbox", role="backend", session="be-1"), self.root)["total_unread"], 0)
 

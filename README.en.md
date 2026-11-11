@@ -4,13 +4,13 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.7.0-blue)
+![Version](https://img.shields.io/badge/version-0.8.0-blue)
 
 Let several agent chats on one machine hand work to each other, return results automatically, and verify them. A role in a project (`leader`, `frontend`, `tester`, …) is a collaboration seat; tasks are routed by role, so nobody has to copy text between two chat windows.
 
 - **Local first**: the hub listens on `127.0.0.1` only; data lives in a local SQLite database and JSON files
 - **Started on demand**: no login autostart; whichever session needs it starts the hub
-- **Visible**: tasks can be delivered into an open Codex / Qoder / OpenCode / DSH chat; WorkBuddy participates through local MCP
+- **Visible**: tasks can be delivered into an open Codex / Qoder / Qwen Code / Kimi Code / OpenCode / DSH chat; WorkBuddy participates through local MCP
 
 ---
 
@@ -131,7 +131,7 @@ On Windows, pass CJK text with `--file` (UTF-8) or `--text-stdin`; text already 
 
 Once a project is linked to an `agent_chat` bus, the hub implements the same protocol natively: events are append-only JSON files, guarded by an OS file lock on `_state/bus.lock`, written via temp file + fsync + atomic rename, with task state rebuilt by replaying events.
 
-The wakeup chain now self-checks: if the bus was rebuilt and its sequence restarted at 1 while the stored cursor still points at an old high sequence, startup/periodic scans reset the cursor and reconcile tasks that still need action. `health` returns `degraded` and `agent_chat_health`; a dead or failing wakeup watcher is shown in the tray as **⚠ wakeup chain degraded**, instead of being hidden behind `workers_alive`.
+The wakeup chain filters against the final task projection first: `closed` tasks and tasks with `verify(pass)` never wake again, and delivery performs a second close-race check. Events found in one backlog scan are summarized per recipient session and durably deduplicated by `project + task + message/sequence + recipient session`. Completing, closing, or cancelling a task only discards notifications; it never retires the role session. If the bus was rebuilt and its sequence restarted at 1 while the stored cursor still points at an old high sequence, startup/periodic scans reset the cursor and reconcile only tasks that still need action. `health` returns `degraded` and `agent_chat_health`; a dead or failing wakeup watcher is shown in the tray as **⚠ wakeup chain degraded**, instead of being hidden behind `workers_alive`.
 
 ```powershell
 $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
@@ -142,6 +142,9 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 
 # claim (returns a lease token)
 & $cli --project alpha bus claim <task-id> --role frontend --session fe-1
+
+# acknowledge this session through the safe sequence suggested by inbox
+& $cli --project alpha bus mark-read-through-sequence --role frontend --session fe-1 <sequence>
 
 # report and verify
 & $cli --project alpha bus result <task-id> --role frontend --session fe-1 --token <token> `
@@ -176,7 +179,7 @@ Different client (for example a DSH tester taken over by Codex) must use the ato
     --session <current-session-id> --transport codex_app_tools --adapter auto
 ```
 
-- `--adapter auto` derives the target: `codex_app_tools→codex`, `qoder_native→qoder`, `opencode_native→opencode`, `dsh_plugin→dsh`.
+- `--adapter auto` derives the target: `codex_app_tools→codex`, `qoder_native→qoder`, `qwen_native→qwen`, `kimi_native→kimi`, `opencode_native→opencode`, `dsh_plugin→dsh`.
 - The migration updates the main config, `.agents-chat/project.json`, restarts the hub, binds the new session, retires the old sessions and rewrites `active-sessions`; any failure rolls back.
 - It returns `adapter_changed`, `hub_restarted`, `active_session`, `retired_sessions` and `postconditions`.
 - The old `session takeover` returns `adapter_transport_mismatch` instead of leaving a half-migrated role.
@@ -226,6 +229,8 @@ Roles run as independent CLI tasks by default. To deliver into an existing deskt
 
 - **Codex**: host app-tools MCP, `role bind --transport codex_app_tools`; one connector per role.
 - **Qoder**: native extension `agents-chat.native`, `role bind --transport qoder_native`; after installation a normal Qoder launch loads it, and it does not type into the composer, switch chats or steal focus.
+- **Qwen Code (experimental, explicit opt-in)**: run `qwen serve` in the project and create a Web Shell session, then bind that real session ID with `qwen_native`. The connector uses Qwen's official REST/SSE API, subscribes before prompting, and correlates `turn_complete` / `turn_error` by `promptId`; it does not automate the page.
+- **Kimi Code (experimental, explicit opt-in)**: uses the maintained Node.js `@moonshot-ai/kimi-code`, not the discontinued Python `kimi-cli`. Log in and run `kimi web --no-open`, then bind a real session ID with `kimi_native`. The connector validates the live OpenAPI/AsyncAPI contract, exact workspace and configured model, subscribes with `subscribe_v2` before prompting, and correlates terminal turns by `triggerPromptId`. It accepts only bearer-authenticated loopback servers and never automates the TUI or desktop composer.
 - **OpenCode**: the official MCP host supplies the real current session ID and the `opencode_native` connector uses the official CLI to deliver into that exact session; no OAuth, app review or manual pull is required.
 - **WorkBuddy**: local stdio MCP pull mode; run `workbuddy setup --project <project>` and new chats can claim work, return results and dispatch to peers.
 - **DSH**: bound automatically by the host plugin; `join` is not needed.
@@ -249,6 +254,8 @@ bus request|claim|renew|progress|blocked|result|verify|cancel|release|reassign|i
 mcp --agent ROLE [--project ID]
 workbuddy setup|status
 opencode setup|status
+qwen status [--session ID] [--root DIR] [--url URL]
+kimi status [--session ID] [--root DIR] [--url URL]
 ```
 
 Every command accepts `--config`, `--state` and `--project`; inside a project directory they can be omitted and are resolved from `.agents-chat/project.json`.
@@ -303,7 +310,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 - Tasks cannot name arbitrary executables or working directories; those come from trusted role configuration.
 - `succeeded` means the runtime exited cleanly, not that the work is accepted — inspect the evidence and side effects.
 - Models still call vendor services online; idle waiting, deduplication, mailboxes and routing are local code.
-- Desktop bindings depend on vendor-specific entry points; after updating a desktop app you may need to rebind or restart the Qoder native connection.
+- Qwen Code's daemon is officially marked Experimental. Agents Chat therefore does not start it, create sessions, or select it as a default transport automatically; run `qwen serve` and bind an existing session explicitly. The default trusted-loopback API grants full execution authority to local processes, so do not expose it to an untrusted network.
+- Kimi Code's Server API is also Experimental. Only the maintained Node.js Kimi Code CLI is supported; the discontinued Python `kimi-cli` is not. `kimi_native` accepts only bearer-authenticated loopback servers and validates the live OpenAPI/AsyncAPI contract, exact session/workspace and model. A Kimi Code entitlement or usable provider remains the user's responsibility.
+- Desktop bindings depend on vendor-specific entry points; after an app update you may need to rebind or restart Qoder. Qwen/Kimi Code updates are capability-probed and become explicitly offline when their required protocol is absent.
 - `install.sh` for macOS was only exercised under Git bash; a real Mac has not been verified yet.
 - Reproducible checks are recorded in [VERIFICATION.md](VERIFICATION.md).
 
@@ -315,7 +324,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 python install.py                                  # install to the default location
 python bridge.py --config config.local.json start  # run the hub from source
 python bridge.py status
-python -m unittest discover -s tests -v            # 81 tests
+python -m unittest discover -s tests -v            # 163 tests
 python build_exe.py                                # build tray and CLI
 python build_portable.py                           # build the portable archive
 ```

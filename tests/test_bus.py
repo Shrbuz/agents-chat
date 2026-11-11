@@ -146,6 +146,27 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bus.mark_read("backend", "be-1", ["33333333-3333-3333-3333-333333333333"])
 
+    def test_mark_read_through_sequence_advances_a_durable_session_cursor(self):
+        bus = self.bus
+        request(bus)
+        second = bus.submit(
+            "request", "frontend", "fe-1", recipient="backend",
+            data={"title": "second", "body": "work",
+                  "acceptance": ["done"], "priority": "P2"})
+        inbox = bus.inbox("backend", "be-1")
+        self.assertEqual(inbox["suggested_mark_read_through_sequence"],
+                         second["event"]["sequence"])
+        marked = bus.mark_read_through(
+            "backend", "be-1", inbox["suggested_mark_read_through_sequence"])
+        self.assertEqual(marked["marked_read_through_sequence"],
+                         second["event"]["sequence"])
+        after = bus.inbox("backend", "be-1")
+        self.assertEqual(after["total_unread"], 0)
+        self.assertEqual(after["read_through_sequence"], second["event"]["sequence"])
+        self.assertEqual(bus.inbox("backend", "be-2")["total_unread"], 2)
+        with self.assertRaisesRegex(ValueError, "beyond"):
+            bus.mark_read_through("backend", "be-1", second["event"]["sequence"] + 10)
+
     def test_duplicate_message_id_is_idempotent_but_not_reusable(self):
         bus = self.bus
         first = request(bus)

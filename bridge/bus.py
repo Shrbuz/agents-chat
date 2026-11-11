@@ -425,18 +425,39 @@ class Bus:
         digest = hashlib.sha256(f"{role}\0{session}".encode()).hexdigest()
         return self.root / "_state" / "receipts" / f"{digest}.json"
 
+    @staticmethod
+    def _receipt(path):
+        if not path.exists():
+            return {"message_ids": [], "through_sequence": 0}
+        value = read_json(path)
+        return {
+            "message_ids": list(value.get("message_ids") or []),
+            "through_sequence": int(value.get("through_sequence") or 0),
+        }
+
     def inbox(self, role, session, limit=50):
         self.require_role(role)
         with self.locked():
             events, tasks = self.load()
             path = self.receipt_path(role, session)
-            seen = set(read_json(path)["message_ids"]) if path.exists() else set()
+            receipt = self._receipt(path)
+            seen = set(receipt["message_ids"])
+            through = receipt["through_sequence"]
             messages = [{**e, "task_status": tasks[e["task_id"]]["status"]}
                         for e in events if e["to"] == role and e["type"] != "renew"
-                        and e["message_id"] not in seen]
+                        and e["sequence"] > through and e["message_id"] not in seen]
             messages.sort(key=lambda e: (tasks[e["task_id"]]["request"].get("priority", "P2"), e["sequence"]))
+            page = messages[:limit]
+            page_ids = {event["message_id"] for event in page}
+            suggested = through
+            for event in sorted(messages, key=lambda value: value["sequence"]):
+                if event["message_id"] not in page_ids:
+                    break
+                suggested = event["sequence"]
             return {"role": role, "session": session, "total_unread": len(messages),
-                    "messages": messages[:limit], "bus_root": str(self.root)}
+                    "messages": page, "read_through_sequence": through,
+                    "suggested_mark_read_through_sequence": suggested,
+                    "bus_root": str(self.root)}
 
     def mark_read(self, role, session, message_ids):
         self.require_role(role)
@@ -446,10 +467,34 @@ class Bus:
             if not set(message_ids) <= eligible:
                 raise ValueError("Cannot mark nonexistent messages or another role's messages read.")
             path = self.receipt_path(role, session)
-            seen = set(read_json(path)["message_ids"]) if path.exists() else set()
+            receipt = self._receipt(path)
+            seen = set(receipt["message_ids"])
             seen.update(message_ids)
-            atomic_json(path, {"role": role, "session": session, "message_ids": sorted(seen)})
+            atomic_json(path, {"role": role, "session": session,
+                               "through_sequence": receipt["through_sequence"],
+                               "message_ids": sorted(seen)})
             return {"marked_read": message_ids}
+
+    def mark_read_through(self, role, session, sequence):
+        """Acknowledge every event for this role up to one durable sequence."""
+        self.require_role(role)
+        if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 0:
+            raise ValueError("through-sequence must be a nonnegative integer.")
+        with self.locked():
+            events, _ = self.load()
+            maximum = max((event["sequence"] for event in events), default=0)
+            if sequence > maximum:
+                raise ValueError("through-sequence is beyond the current bus tail.")
+            path = self.receipt_path(role, session)
+            receipt = self._receipt(path)
+            through = max(receipt["through_sequence"], sequence)
+            # IDs at/below the high-water mark no longer need separate storage.
+            event_by_id = {event["message_id"]: event for event in events}
+            seen = sorted(message_id for message_id in receipt["message_ids"]
+                          if event_by_id.get(message_id, {}).get("sequence", through + 1) > through)
+            atomic_json(path, {"role": role, "session": session,
+                               "through_sequence": through, "message_ids": seen})
+            return {"role": role, "session": session, "marked_read_through_sequence": through}
 
     def _active_sessions(self):
         """role -> active session id, published by the hub; None when absent."""

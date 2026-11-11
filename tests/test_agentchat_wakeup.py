@@ -85,7 +85,19 @@ class WakeupTests(unittest.TestCase):
         self.fail("no agent-chat wakeup task was created for " + key)
 
     def wakeup(self, created):
-        return self.wait_key("agentchat:" + created["event"]["message_id"])
+        event = created["event"]
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            project = self.broker.agent_chat.projects[0]
+            role = project["roles"][event["to"]]
+            session = (self.broker.agent_chat._bus_session(project, event["to"])
+                       or "unbound:" + role["address"])
+            key = self.broker.agent_chat._delivery_key(project, event, session)
+            tasks = self.broker.store.wakeup_tasks_for_keys([key])
+            if key in tasks:
+                return tasks[key]
+            time.sleep(0.1)
+        self.fail("no agent-chat wakeup task was created for event " + event["message_id"])
 
     def test_pending_request_before_watcher_start_is_reconciled(self):
         created = submit_request(self.bus_root)
@@ -112,21 +124,38 @@ class WakeupTests(unittest.TestCase):
         created = submit_request(self.bus_root)
         self.start_bridge()
         first = self.wakeup(created)
-        base = "agentchat:" + created["event"]["message_id"]
         self.broker.store.finish(first["id"], "timed_out",
                                  {"error": "desktop_delivery_timeout"})
         project = self.broker.agent_chat.projects[0]
         self.broker.agent_chat._reconcile_pending(project)
-        retry = self.broker.store.latest_task_by_key_prefix("agent-chat", base)
+        retry = self.broker.store.get(first["id"])
         self.assertEqual(retry["id"], first["id"])
-        self.assertEqual(retry["idem"], base)
+        self.assertTrue(retry["idem"].startswith("agentchat-batch:"))
         self.assertTrue(retry["result"]["unnotified"])
         self.broker.store.finish(retry["id"], "succeeded",
                                  {"summary": "通知已投递", "run_delivered": True})
         self.broker.agent_chat._reconcile_pending(project)
-        again = self.broker.store.latest_task_by_key_prefix("agent-chat", base)
+        again = self.broker.store.get(first["id"])
         self.assertEqual(again["id"], retry["id"])
-        self.assertEqual(self.broker.store.count_tasks_by_key_prefix("agent-chat", base), 1)
+        self.assertEqual(self.broker.store.count_tasks_by_key_prefix(
+            "agent-chat", "agentchat-batch:"), 1)
+
+    def test_upgrade_adopts_the_legacy_message_id_wakeup(self):
+        created = submit_request(self.bus_root)
+        self.broker = Broker(self.base / "state", read_config(self.config))
+        event = created["event"]
+        legacy_id, _ = self.broker.store.enqueue(
+            "agent-chat", "demo.backend", "agentchat:" + event["message_id"], {
+                "prompt": "check inbox", "timeout": 1800, "delivery_timeout": 30,
+                "context": [], "reply_mode": "mailbox", "queue_ttl": 86400,
+                "notify": False, "kind": "agent_chat_wakeup",
+                "event_type": "request", "bus_event_id": event["message_id"],
+                "interrupt_on_timeout": False})
+        self.broker.agent_chat.start()
+        adopted = self.wakeup(created)
+        self.assertEqual(adopted["id"], legacy_id)
+        self.assertEqual(self.broker.store.count_tasks_by_key_prefix(
+            "agent-chat", "agentchat-batch:"), 0)
 
     def test_rebind_cancelled_wakeup_is_reopened_for_the_still_pending_event(self):
         created = submit_request(self.bus_root)
@@ -142,7 +171,7 @@ class WakeupTests(unittest.TestCase):
         self.assertEqual(retry["state"], "queued")
         self.assertTrue(retry["result"]["unnotified"])
 
-    def test_claim_result_and_verify_each_wake_the_right_role_once(self):
+    def test_claim_and_result_wake_once_but_terminal_verify_is_suppressed(self):
         created = submit_request(self.bus_root)
         self.start_bridge()
         request_wakeup = self.wakeup(created)
@@ -151,24 +180,28 @@ class WakeupTests(unittest.TestCase):
         bus = Bus(self.bus_root)
 
         claimed = bus.submit("claim", "backend", "be-1", task_id=task_id)
-        claim_wakeup = self.wait_key("agentchat:" + claimed["event"]["message_id"])
+        claim_wakeup = self.wakeup(claimed)
         self.assertEqual(claim_wakeup["target"], "demo.frontend")
 
         token = claimed["event"]["data"]["token"]
         result = bus.submit("result", "backend", "be-1", task_id=task_id, token=token,
                             data={"body": "done", "evidence": ["test passed"]})
-        result_wakeup = self.wait_key("agentchat:" + result["event"]["message_id"])
+        result_wakeup = self.wakeup(result)
         self.assertEqual(result_wakeup["target"], "demo.frontend")
 
         verified = bus.submit("verify", "frontend", "fe-1", task_id=task_id,
                               data={"outcome": "pass", "body": "ok"})
-        verify_wakeup = self.wait_key("agentchat:" + verified["event"]["message_id"])
-        self.assertEqual(verify_wakeup["target"], "demo.backend")
+        time.sleep(2)
+        project = self.broker.agent_chat.projects[0]
+        role = project["roles"]["backend"]
+        session = (self.broker.agent_chat._bus_session(project, "backend")
+                   or "unbound:" + role["address"])
+        verify_key = self.broker.agent_chat._delivery_key(
+            project, verified["event"], session)
+        self.assertNotIn(verify_key, self.broker.store.wakeup_tasks_for_keys([verify_key]))
 
-        for event in (created, claimed, result, verified):
-            key = "agentchat:" + event["event"]["message_id"]
-            self.assertEqual(self.broker.store.count_tasks_by_key_prefix("agent-chat", key), 1)
-            self.assertEqual(self.wait_key(key)["payload"]["kind"], "agent_chat_wakeup")
+        for event in (created, claimed, result):
+            self.assertEqual(self.wakeup(event)["payload"]["kind"], "agent_chat_wakeup")
 
     def test_stale_high_cursor_from_a_rebuilt_bus_is_reset(self):
         created = submit_request(self.bus_root)
@@ -187,8 +220,7 @@ class WakeupTests(unittest.TestCase):
     def test_cursor_does_not_advance_when_enqueue_fails(self):
         self.start_bridge()
         created = submit_request(self.bus_root)
-        key = "agentchat:" + created["event"]["message_id"]
-        with mock.patch.object(self.broker.store, "enqueue",
+        with mock.patch.object(self.broker.store, "enqueue_wakeup",
                                side_effect=RuntimeError("injected enqueue failure")):
             time.sleep(2)
             cursor = json.loads(self.broker.store.bus_cursor("demo"))["backend"]
@@ -196,8 +228,83 @@ class WakeupTests(unittest.TestCase):
             health = self.broker.agent_chat.health()
             self.assertFalse(health["ok"])
             self.assertTrue(health["degraded"])
-        task = self.wait_key(key)
+        task = self.wakeup(created)
         self.assertEqual(task["target"], "demo.backend")
+
+    def test_closed_backlog_is_discarded_without_retiring_the_role_session(self):
+        first = submit_request(self.bus_root)
+        bus = Bus(self.bus_root)
+        claimed = bus.submit("claim", "backend", "be-1", task_id=first["task"]["task_id"])
+        bus.submit("result", "backend", "be-1", task_id=first["task"]["task_id"],
+                   token=claimed["event"]["data"]["token"],
+                   data={"body": "done", "evidence": ["ok"]})
+        verified = bus.submit("verify", "frontend", "fe-1", task_id=first["task"]["task_id"],
+                              data={"outcome": "pass", "body": "accepted"})
+        self.start_bridge()
+        time.sleep(2)
+        for created in (first, claimed, verified):
+            event = created["event"]
+            project = self.broker.agent_chat.projects[0]
+            role = project["roles"][event["to"]]
+            session = "unbound:" + role["address"]
+            key = self.broker.agent_chat._delivery_key(project, event, session)
+            self.assertNotIn(key, self.broker.store.wakeup_tasks_for_keys([key]))
+        self.assertEqual(self.broker.store.wakeup_stats()["pending"], 0)
+
+    def test_resolved_backlog_is_one_summary_with_composite_event_keys(self):
+        bus = Bus(self.bus_root)
+        results = []
+        for number in (1, 2):
+            created = bus.submit(
+                "request", "frontend", "fe-1", recipient="backend",
+                data={"title": f"task {number}", "body": "work",
+                      "acceptance": ["done"], "priority": "P1"})
+            claimed = bus.submit("claim", "backend", "be-1",
+                                 task_id=created["task"]["task_id"])
+            results.append(bus.submit(
+                "result", "backend", "be-1", task_id=created["task"]["task_id"],
+                token=claimed["event"]["data"]["token"],
+                data={"body": "done", "evidence": ["ok"]}))
+        self.start_bridge()
+        first = self.wakeup(results[0])
+        second = self.wakeup(results[1])
+        self.assertEqual(first["id"], second["id"])
+        self.assertEqual(first["payload"]["event_type"], "batch")
+        self.assertEqual(len(first["payload"]["bus_events"]), 2)
+        self.assertEqual(len(first["payload"]["dedupe_keys"]), 2)
+        for key in first["payload"]["dedupe_keys"]:
+            self.assertIn("demo", key)
+            self.assertIn("unbound:demo.frontend", key)
+        self.assertIn("已合并为一条摘要", first["payload"]["prompt"])
+
+    def test_delivery_preflight_discards_a_task_closed_after_enqueue(self):
+        created = submit_request(self.bus_root)
+        self.start_bridge()
+        wakeup = self.wakeup(created)
+        bus = Bus(self.bus_root)
+        claimed = bus.submit("claim", "backend", "be-1", task_id=created["task"]["task_id"])
+        bus.submit("result", "backend", "be-1", task_id=created["task"]["task_id"],
+                   token=claimed["event"]["data"]["token"],
+                   data={"body": "done", "evidence": ["ok"]})
+        bus.submit("verify", "frontend", "fe-1", task_id=created["task"]["task_id"],
+                   data={"outcome": "pass", "body": "accepted"})
+        self.assertIsNone(self.broker.agent_chat.prepare_wakeup(wakeup))
+        self.assertEqual(self.broker.store.list_sessions(project="demo"), [])
+
+    def test_delivery_preflight_discards_a_superseded_claim_notification(self):
+        created = submit_request(self.bus_root)
+        self.start_bridge()
+        self.wakeup(created)
+        bus = Bus(self.bus_root)
+        claimed = bus.submit("claim", "backend", "be-1", task_id=created["task"]["task_id"])
+        claim_wakeup = self.wakeup(claimed)
+        result = bus.submit(
+            "result", "backend", "be-1", task_id=created["task"]["task_id"],
+            token=claimed["event"]["data"]["token"],
+            data={"body": "done", "evidence": ["ok"]})
+        result_wakeup = self.wakeup(result)
+        self.assertIsNone(self.broker.agent_chat.prepare_wakeup(claim_wakeup))
+        self.assertIsNotNone(self.broker.agent_chat.prepare_wakeup(result_wakeup))
 
     def test_health_is_degraded_when_the_wakeup_scan_raises(self):
         self.start_bridge()

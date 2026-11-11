@@ -93,8 +93,13 @@ def command_for(endpoint, run_dir):
                         f"skills.max_context_tokens={endpoint.get('skill_catalog_tokens', 512)}", "-c",
                         f"tool_output_token_limit={endpoint.get('tool_output_tokens', 1200)}"]
         command += endpoint.get("args", []) + ["-"]
-    elif adapter in ("qoder", "workbuddy", "codebuddy"):
+    elif adapter in ("qoder", "qwen", "workbuddy", "codebuddy"):
         command += ["-p", "--output-format", "json"] + endpoint.get("args", [])
+    elif adapter == "kimi":
+        # Kimi Code's non-interactive CLI accepts the prompt only as an argv
+        # value, which would expose collaboration task text in the process
+        # list.  Project roles therefore require the exact-session native path.
+        raise ValueError("kimi_native_requires_bound_session")
     elif adapter == "opencode":
         # With no positional message, the official CLI reads the bounded prompt
         # from stdin.  This also avoids exposing task text in the process list.

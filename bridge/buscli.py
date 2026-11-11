@@ -102,6 +102,13 @@ def add_commands(sub):
     _role_session(mark)
     mark.add_argument("message_id", nargs="+")
 
+    mark_through = bus_sub.add_parser(
+        "mark-read-through-sequence",
+        help="Mark every message for this session read through one bus sequence")
+    _project_option(mark_through)
+    _role_session(mark_through)
+    mark_through.add_argument("sequence", type=int)
+
     status = bus_sub.add_parser("status", help="Open tasks on the bus")
     _project_option(status)
     status.add_argument("--role")
@@ -204,6 +211,8 @@ def run(args, root):
         return bus.inbox(args.role, args.session, limit=args.limit)
     if command == "mark-read":
         return bus.mark_read(args.role, args.session, args.message_id)
+    if command == "mark-read-through-sequence":
+        return bus.mark_read_through(args.role, args.session, args.sequence)
     if command == "status":
         return bus.status(role=args.role, include_closed=args.all)
     if command == "show":

@@ -2,6 +2,19 @@
 
 本文件只记录可公开复现的检查。真实桌面聊天 ID、任务 ID、业务项目路径和本机截图不进入开源仓库。
 
+## 0.8.0 历史唤醒抑制、Qwen 与 Kimi Code
+
+| 检查 | 结果 |
+|---|---|
+| 历史通知 | closed 或已有终态 verify 的任务在扫描、积压补扫和投递前均被过滤；接收方遇到已关闭任务直接丢弃，不要求 Agent 回复 |
+| 幂等与积压 | 唤醒按 project/task/message-or-sequence/recipient-session 组合键去重；同轮积压合并摘要，不再逐条重放旧 claim/result |
+| 已读游标 | `bus mark-read-through-sequence` 按角色 + 会话可靠推进 durable cursor；关闭任务不再被误解释为退休角色会话 |
+| Qwen Code | 官方 `qwen serve` REST/SSE：capability/session/workspace 探测、订阅先于 prompt、`promptId` 终态关联、幂等键、transcript 恢复与精确取消；真实总线 request → claim → result → verify(pass) → closed 通过 |
+| Kimi Code | 新版 Node.js Kimi Code 2.5.3：live OpenAPI/AsyncAPI 校验、WebSocket v2 `subscribe_v2`、精确 `triggerPromptId`、prompt 级取消和 transcript 去重；旧 Python `kimi-cli` 不接入 |
+| Kimi 实测边界 | 本机完成登录、session/workspace/prompt/WebSocket 真实协议验证；账号无 Kimi Code entitlement，模型调用被官方 403 拒绝，因此未宣告真实业务闭环通过，也未迁移现有在线角色 |
+| 安装版 | `0.8.0` 安装后 Hub `degraded=false`、agent-chat health 正常、无 pending wakeups / needs_attention；Qwen 保持 ready，Kimi 未绑定时显示 unused + experimental |
+| 回归 | `python -m unittest discover -s tests -v`：163 项通过；`py_compile` 与 `git diff --check` 通过 |
+
 ## 0.6.4 DSH 适配器
 
 | 检查 | 结果 |

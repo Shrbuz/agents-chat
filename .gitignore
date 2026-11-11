@@ -24,5 +24,10 @@ demo-report.json
 test-results.txt
 COPY-MANIFEST.json
 
+# this checkout's local Agents Chat collaboration state
+/.agents-chat/
+/agent_chat/
+/AGENTS.md
+
 # machine-specific DSH overlay
 connectors/dsh-host/cordis.patch.yml

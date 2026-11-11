@@ -4,6 +4,7 @@ The file bus remains the source of truth (claim/lease/verify semantics live in
 that skill).  This bridge only turns a new event into one bounded wakeup task
 for the role session, with no extra model polling.
 """
+import hashlib
 import json
 from pathlib import Path
 import sys
@@ -17,6 +18,7 @@ WAKEUP_SENDER = "agent-chat"
 def _helper_for(project, root):
     configured = (project.get("agent_chat") or {}).get("helper")
     candidates = [Path(configured) if configured else None,
+                  Path.home() / ".agents/skills/agents-chat-desktop/scripts/agent_chat.py",
                   Path.home() / ".agents/skills/agent-chat/scripts/agent_chat.py",
                   Path(root) / "tools/agent-chat/scripts/agent_chat.py",
                   Path(root) / ".agents/skills/agent-chat/scripts/agent_chat.py"]
@@ -172,6 +174,10 @@ class AgentChatBridge:
         if not self.projects:
             return
         self.started_at = time.time()
+        # Upgrades may inherit an old message-id keyed wakeup plus one task
+        # created by the new composite-key code before the first restart.  Keep
+        # exactly one active delivery without touching any role session.
+        self.store.collapse_active_wakeup_duplicates()
         self._prime_cursors()
         # Priming skips on-disk history, which is correct for delivered events.
         # A request that is still pending and has no wakeup task, however, must
@@ -318,6 +324,8 @@ class AgentChatBridge:
 
     def _scan(self, project):
         project_id = project["id"]
+        events, tasks = Bus(project["bus"]).load()
+        self._discard_terminal_wakeups(project, events, tasks)
         cursors = self._cursors(project_id, project["roles"].keys())
         reset = False
         for bus_role, role in project["roles"].items():
@@ -334,6 +342,7 @@ class AgentChatBridge:
                 cursor = newest
                 cursors[bus_role] = newest
                 reset = True
+            pending = []
             for path in paths:
                 if path.name <= cursor:
                     continue
@@ -343,50 +352,97 @@ class AgentChatBridge:
                     self._set_cursor(project_id, bus_role, path.name)
                     cursor = path.name
                     continue
-                action = self._action(project_id, bus_role, event)
-                if action is False:
-                    self._set_cursor(project_id, bus_role, path.name)
-                    cursor = path.name
-                    continue
-                # Do not block the wakeup on unrelated work for the role.  A
-                # long-running desktop task used to make the cursor sit here
-                # forever, so a new request never produced its agent-chat wakeup.
-                self._enqueue_wakeup(project, bus_role, role, event, action)
-                self._set_cursor(project_id, bus_role, path.name)
-                cursor = path.name
+                pending.append(event)
+            selected = self._select_actions(pending, tasks, bus_role, include_cancel=True)
+            if selected:
+                # Reserve/deliver the whole scan as one summary.  The cursor is
+                # advanced only after the idempotency records and queue entry
+                # commit, so a crash cannot silently lose a notification.
+                self._enqueue_wakeup_batch(project, bus_role, role, selected)
                 self.notify()
+            if paths and paths[-1].name > cursor:
+                self._set_cursor(project_id, bus_role, paths[-1].name)
+                cursors[bus_role] = paths[-1].name
         if reset:
             self._reconcile_pending(project)
             self._record_success(project_id)
-        self._sync_projection(project)
+        self._sync_projection(project, tasks)
 
     def _enqueue_wakeup(self, project, bus_role, role, event, action):
-        base = "agentchat:" + str(event.get("message_id") or event.get("task_id"))
-        existing = self.store.latest_task_by_key_prefix(WAKEUP_SENDER, base)
-        if existing is not None and existing["state"] in ("queued", "running", "succeeded"):
-            return existing
-        if existing is not None:
-            # Older versions created a new retry task and eventually gave up.
-            # Re-open the latest one instead: one bus event keeps one stable
-            # delivery identity and remains visibly unnotified until recovered.
-            self.store.requeue_wakeup(existing["id"], {
-                "error": (existing.get("result") or {}).get("error") or "wakeup_not_delivered",
+        return self._enqueue_wakeup_batch(project, bus_role, role, [(event, action)])
+
+    def _delivery_key(self, project, event, session):
+        """Stable identity independent from the generated queue task id."""
+        return "|".join((
+            str(project.get("project_id") or project["id"]),
+            str(event.get("task_id") or ""),
+            str(event.get("message_id") or ""),
+            str(event.get("sequence") or ""),
+            str(session),
+        ))
+
+    def _enqueue_wakeup_batch(self, project, bus_role, role, selected):
+        session = self._bus_session(project, bus_role) or ("unbound:" + role["address"])
+        pairs = [(event, action) for event, action in selected
+                 if event.get("message_id") and event.get("task_id")]
+        keys = [self._delivery_key(project, event, session) for event, _ in pairs]
+        existing = self.store.wakeup_tasks_for_keys(keys)
+        # Adopt v0.7's message-id keyed task instead of creating a second
+        # wakeup during an in-place upgrade.  From this point onward the durable
+        # composite identity owns retries for that same task id.
+        for (event, _), delivery_key in zip(pairs, keys):
+            if delivery_key in existing:
+                continue
+            legacy_key = "agentchat:" + str(event.get("message_id") or "")
+            legacy = self.store.task_by_key(WAKEUP_SENDER, legacy_key)
+            if legacy is None or legacy.get("target") != role["address"]:
+                continue
+            self.store.bind_wakeup_keys(legacy["id"], [delivery_key])
+            existing[delivery_key] = legacy
+        unseen = [(event, action, key) for (event, action), key in zip(pairs, keys)
+                  if key not in existing]
+
+        # A failed delivery for an event that is still actionable keeps its
+        # original task id and is retried; no new wakeup identity is minted.
+        retried = set()
+        for item in existing.values():
+            if item["id"] in retried or item["state"] in ("queued", "running", "succeeded"):
+                continue
+            self.store.requeue_wakeup(item["id"], {
+                "error": (item.get("result") or {}).get("error") or "wakeup_not_delivered",
                 "summary": "Wakeup is still required and will be retried.",
                 "retryable": True, "needs_attention": True, "unnotified": True,
             })
+            retried.add(item["id"])
             self.wakeups += 1
-            return self.store.get(existing["id"])
-        if not event.get("message_id") and not event.get("task_id"):
-            return existing
-        key = base
-        prompt = self._prompt(project, bus_role, role, None, event, action)
+        if not unseen:
+            item = next(iter(existing.values()), None)
+            return self.store.get(item["id"]) if item else None
+
+        fresh = [(event, action) for event, action, _ in unseen]
+        fresh_keys = [key for _, _, key in unseen]
+        digest = hashlib.sha256("\0".join(sorted(fresh_keys)).encode("utf-8")).hexdigest()
+        key = "agentchat-batch:" + digest
+        prompt = self._prompt_batch(project, bus_role, role, fresh)
+        bus_events = [{
+            "project_id": project.get("project_id") or project["id"],
+            "task_id": event.get("task_id"), "message_id": event.get("message_id"),
+            "sequence": event.get("sequence"), "type": event.get("type"),
+            "to": event.get("to"), "action": action,
+        } for event, action in fresh]
         payload = {"prompt": prompt, "timeout": 1800, "delivery_timeout": 30,
                    "context": [], "reply_mode": "mailbox", "queue_ttl": 86400,
                    "notify": False, "kind": "agent_chat_wakeup",
-                   "event_type": event.get("type"),
-                   "bus_event_id": event.get("message_id") or event.get("task_id"),
+                   "event_type": fresh[0][0].get("type") if len(fresh) == 1 else "batch",
+                   "event_types": sorted({event.get("type") for event, _ in fresh}),
+                   "bus_event_id": fresh[0][0].get("message_id") if len(fresh) == 1 else None,
+                   "bus_events": bus_events,
+                   "project_id": project["id"],
+                   "task_ids": sorted({event.get("task_id") for event, _ in fresh}),
+                   "recipient_session": session, "dedupe_keys": fresh_keys,
                    "interrupt_on_timeout": False}
-        task_id, duplicate = self.store.enqueue(WAKEUP_SENDER, role["address"], key, payload)
+        task_id, duplicate = self.store.enqueue_wakeup(
+            WAKEUP_SENDER, role["address"], key, payload, fresh_keys)
         if not duplicate:
             self.wakeups += 1
         return self.store.get(task_id)
@@ -402,31 +458,62 @@ class AgentChatBridge:
             events, tasks = Bus(project["bus"]).load()
         except (OSError, ValueError):
             return
-        latest = {}
-        for event in events:
-            latest[event["task_id"]] = event
+        self._discard_terminal_wakeups(project, events, tasks)
         cursors = self._cursors(project["id"], project["roles"].keys())
-        for task_id, event in latest.items():
-            task = tasks.get(task_id)
-            if not task:
+        for bus_role, role in project["roles"].items():
+            # Reconciliation repairs missed *actionable* work.  A historical
+            # cancellation is already terminal and must not be replayed after
+            # every fresh install/database rebuild; live scans still deliver a
+            # newly appended cancel immediately.
+            selected = self._select_actions(events, tasks, bus_role, include_cancel=False)
+            if not selected:
                 continue
-            bus_role = event.get("to")
-            role = project["roles"].get(bus_role)
-            if not role:
+            self._enqueue_wakeup_batch(project, bus_role, role, selected)
+            newest = max(
+                f"{event.get('sequence', 0):08d}_{event.get('message_id', '')}.json"
+                for event, _ in selected)
+            if newest > cursors.get(bus_role, ""):
+                self._set_cursor(project["id"], bus_role, newest)
+                cursors[bus_role] = newest
+            self.notify()
+
+    @staticmethod
+    def _terminal_verified(task):
+        return bool(task and (task.get("status") == "closed" or
+                    (task.get("verification") or {}).get("outcome") == "pass"))
+
+    def _discard_terminal_wakeups(self, project, events, tasks):
+        terminal = {task_id for task_id, task in tasks.items()
+                    if self._terminal_verified(task)}
+        if not terminal:
+            return []
+        event_ids = {event.get("message_id") for event in events
+                     if event.get("task_id") in terminal and event.get("message_id")}
+        return self.store.discard_bus_wakeups(project["id"], terminal, event_ids)
+
+    def _select_actions(self, events, tasks, bus_role, include_cancel=False):
+        """Choose at most one current action per task for one recipient role."""
+        selected = {}
+        for event in events:
+            if event.get("to") != bus_role:
                 continue
+            task = tasks.get(event.get("task_id"))
             action = self._reconcile_action(event, task)
+            if (not action and include_cancel and event.get("type") == "cancel"
+                    and task and task.get("status") == "cancelled"):
+                action = "cancel"
             if not action:
                 continue
-            self._enqueue_wakeup(project, bus_role, role, event, action)
-            name = f"{event.get('sequence', 0):08d}_{event.get('message_id', '')}.json"
-            if name > cursors.get(bus_role, ""):
-                self._set_cursor(project["id"], bus_role, name)
-                cursors[bus_role] = name
-            self.notify()
+            previous = selected.get(event["task_id"])
+            if previous is None or event.get("sequence", 0) > previous[0].get("sequence", 0):
+                selected[event["task_id"]] = (event, action)
+        return sorted(selected.values(), key=lambda pair: pair[0].get("sequence", 0))
 
     @staticmethod
     def _reconcile_action(event, task):
         """Only the latest event matters; only open states deserve a wakeup."""
+        if not task or AgentChatBridge._terminal_verified(task):
+            return False
         kind = event.get("type")
         status = task.get("status")
         data = event.get("data") or {}
@@ -442,16 +529,15 @@ class AgentChatBridge:
             return "release"
         if kind == "reassign" and status == "pending":
             return "reassign"
-        if kind == "verify" and data.get("outcome") == "pass" and status == "closed":
-            return "verify_pass"
         if kind == "verify" and data.get("outcome") == "fail" and status == "pending":
             return "verify_fail"
         return False
 
-    def _sync_projection(self, project):
+    def _sync_projection(self, project, tasks=None):
         """Mirror replayed task state into the store; the bus remains authoritative."""
         try:
-            _, tasks = Bus(project["bus"]).load()
+            if tasks is None:
+                _, tasks = Bus(project["bus"]).load()
         except (OSError, ValueError):
             # A damaged or partially written bus must never stop wakeups.
             return
@@ -470,18 +556,14 @@ class AgentChatBridge:
             return False
         if event.get("from") == bus_role:
             return False
-        kind = event.get("type")
-        if kind == "verify":
-            return ("verify_pass" if (event.get("data") or {}).get("outcome") == "pass"
-                    else "verify_fail")
-        if kind == "claim":
-            return "claim"
-        if kind == "cancel":
-            # Stop someone who is working; an unclaimed cancel is just a note.
-            return kind if self._task_status(project_id, event.get("task_id")) in ("in_progress", "blocked") else False
-        if kind in DELIVER:
-            return kind
-        return False
+        project = next((item for item in self.projects if item["id"] == project_id), None)
+        if not project:
+            return False
+        try:
+            _, tasks = Bus(project["bus"]).load()
+        except (OSError, ValueError):
+            return False
+        return self._reconcile_action(event, tasks.get(event.get("task_id")))
 
     def _task_status(self, project_id, task_id):
         for row in self.store.bus_projection(project_id):
@@ -518,6 +600,99 @@ class AgentChatBridge:
                 f'python "{helper}" --project "{project["root"]}" inbox '
                 f'--role {bus_role} --session {session}')
 
+    def _prompt_batch(self, project, bus_role, role, selected):
+        """One concise inbox pointer for all actionable events in this scan."""
+        if len(selected) == 1:
+            event, action = selected[0]
+            return self._prompt(project, bus_role, role, None, event, action)
+        tasks = []
+        for event, action in selected:
+            tasks.append(f"{str(event.get('task_id'))[:8]}({action})")
+        summary = "、".join(tasks[:8])
+        if len(tasks) > 8:
+            summary += f"，另 {len(tasks) - 8} 项"
+        session = self._bus_session(project, bus_role) or f"{bus_role}-1"
+        head = (f"Agents Chat 收件箱本轮有 {len(selected)} 条需要处理的消息，"
+                f"已合并为一条摘要：{summary}。请先读取 inbox，并按任务当前状态处理；"
+                "已关闭任务无需回复。")
+        helper = project["helper"]
+        if not helper:
+            return head + "\n用项目内的 agent-chat helper 执行 inbox/claim/result/verify。"
+        return (head + "\n"
+                f'python "{helper}" --project "{project["root"]}" inbox '
+                f'--role {bus_role} --session {session}')
+
+    def prepare_wakeup(self, queue_task):
+        """Drop or trim a wakeup immediately before transport delivery.
+
+        This closes the race where a result wakeup was queued and the requester
+        verified the task before the desktop worker reached it.  It deliberately
+        changes only the advisory queue task; role/session lifecycle state is
+        never touched.
+        """
+        payload = queue_task.get("payload") or {}
+        if payload.get("kind") != "agent_chat_wakeup":
+            return queue_task
+        project_id = payload.get("project_id")
+        candidates = ([item for item in self.projects if item["id"] == project_id]
+                      if project_id else list(self.projects))
+        for project in candidates:
+            try:
+                events, tasks = Bus(project["bus"]).load()
+            except (OSError, ValueError):
+                continue
+            described = list(payload.get("bus_events") or [])
+            if described:
+                active = []
+                for item in described:
+                    task = tasks.get(item.get("task_id"))
+                    event = next((value for value in events
+                                  if value.get("message_id") == item.get("message_id")), item)
+                    action = self._reconcile_action(event, task)
+                    if (not action and event.get("type") == "cancel" and task
+                            and task.get("status") == "cancelled"):
+                        action = "cancel"
+                    if action:
+                        active.append({**item, "action": action})
+                if not active:
+                    return None
+                if len(active) != len(described):
+                    role_pair = next(
+                        ((name, role) for name, role in project["roles"].items()
+                         if role["address"] == queue_task.get("target")), None)
+                    if role_pair:
+                        bus_role, role = role_pair
+                        selected = []
+                        for item in active:
+                            event = next((value for value in events
+                                          if value.get("message_id") == item.get("message_id")), item)
+                            selected.append((event, item.get("action") or item.get("type") or "message"))
+                        queue_task = dict(queue_task)
+                        queue_task["payload"] = dict(payload)
+                        queue_task["payload"]["bus_events"] = active
+                        queue_task["payload"]["task_ids"] = sorted(
+                            {item.get("task_id") for item in active})
+                        queue_task["payload"]["prompt"] = self._prompt_batch(
+                            project, bus_role, role, selected)
+                return queue_task
+
+            # Backward compatibility for already queued v0.7 wakeups.  Their
+            # payload only carried a bus event id, so resolve it against each
+            # project and discard it when that event's task has since closed.
+            legacy_id = payload.get("bus_event_id")
+            if legacy_id:
+                event = next((value for value in events
+                              if value.get("message_id") == legacy_id or
+                              (not value.get("message_id") and value.get("task_id") == legacy_id)), None)
+                if event is not None:
+                    task = tasks.get(event.get("task_id"))
+                    action = self._reconcile_action(event, task)
+                    if (not action and event.get("type") == "cancel" and task
+                            and task.get("status") == "cancelled"):
+                        action = "cancel"
+                    return queue_task if action else None
+        return queue_task
+
     def _bus_session(self, project, bus_role):
         """The session name this role already uses on the bus, if it has one."""
         role = project["roles"].get(bus_role) or {}
@@ -526,8 +701,11 @@ class AgentChatBridge:
             sessions = self.store.list_sessions(project=project["id"], role=local_role)
         except Exception:
             return None
+        sessions.sort(key=lambda item: (not item.get("online", False),
+                                        item.get("retired", 0),
+                                        -item.get("last_seen", 0)))
         for item in sessions:
-            if item["id"].startswith("desktop:"):
+            if item["id"].startswith("desktop:") and not item.get("retired"):
                 return item["id"].split(":", 1)[1]
         return None
 

@@ -4,13 +4,13 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.7.0-blue)
+![Version](https://img.shields.io/badge/version-0.8.0-blue)
 
 让同一台机器上的多个 Agent 聊天互相派活、自动回传结果并验收。项目里的角色（`leader`、`frontend`、`tester`……）各自是一个协作席位，任务按角色路由，不需要人工在两个聊天窗口之间复制粘贴。
 
 - **本地优先**：中枢只监听 `127.0.0.1`，数据存在本地 SQLite 与 JSON 文件里
 - **按需启动**：不设开机自启；用到它的会话自己拉起后台
-- **看得见**：任务可以投进你正在用的 Codex / Qoder / OpenCode / DSH 聊天；WorkBuddy 通过本地 MCP 参与收发
+- **看得见**：任务可以投进你正在用的 Codex / Qoder / Qwen Code / Kimi Code / OpenCode / DSH 聊天；WorkBuddy 通过本地 MCP 参与收发
 
 ---
 
@@ -131,7 +131,7 @@ Windows 下中文优先用 `--file <utf8文件>` 或 `--text-stdin`，避免命�
 
 项目关联 `agent_chat` 总线后，中枢**原生实现**同一套协议：事件是只增不改的 JSON 文件，`_state/bus.lock` 上加 OS 文件锁，写入走临时文件 + fsync + 原子改名，任务状态由事件重放得出。
 
-唤醒链路现在会自检：如果总线被重建导致事件序号从 1 重新开始，而数据库游标还停在旧的高序号，启动/巡检会重置游标并补扫仍待处理的任务；`health` 返回 `degraded` 和 `agent_chat_health`，唤醒线程异常或扫描失败时托盘会显示 **⚠ 唤醒链路异常**，不再用 `workers_alive` 冒充健康。
+唤醒链路会先按任务最终投影过滤：`closed` 或已经 `verify(pass)` 的任务不会再唤醒，投递前还会二次检查关闭竞态。同一轮积压事件按接收会话合并为摘要，并以 `project + task + message/sequence + recipient session` 持久幂等；任务结束、关闭或取消只丢弃通知，绝不退休角色会话。如果总线被重建导致事件序号从 1 重新开始，而数据库游标还停在旧的高序号，启动/巡检会重置游标并只补扫仍待处理的任务；`health` 返回 `degraded` 和 `agent_chat_health`，唤醒线程异常或扫描失败时托盘会显示 **⚠ 唤醒链路异常**，不再用 `workers_alive` 冒充健康。
 
 ```powershell
 $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
@@ -142,6 +142,9 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 
 # 领取（返回租约 token）
 & $cli --project alpha bus claim <task-id> --role frontend --session fe-1
+
+# 批量确认当前会话已读（sequence 取 inbox 返回的 suggested_mark_read_through_sequence）
+& $cli --project alpha bus mark-read-through-sequence --role frontend --session fe-1 <sequence>
 
 # 交结果 / 验收
 & $cli --project alpha bus result <task-id> --role frontend --session fe-1 --token <token> `
@@ -176,7 +179,7 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
     --session <当前会话ID> --transport codex_app_tools --adapter auto
 ```
 
-- `--adapter auto` 按 transport 推导：`codex_app_tools→codex`、`qoder_native→qoder`、`opencode_native→opencode`、`dsh_plugin→dsh`。
+- `--adapter auto` 按 transport 推导：`codex_app_tools→codex`、`qoder_native→qoder`、`qwen_native→qwen`、`kimi_native→kimi`、`opencode_native→opencode`、`dsh_plugin→dsh`。
 - 迁移依次完成：主配置 → `.agents-chat/project.json` → 重启中枢 → 绑定新会话 → 退休旧会话 → 更新 `active-sessions`；任一步失败会回滚。
 - 返回 `adapter_changed`、`hub_restarted`、`active_session`、`retired_sessions`、`postconditions`。
 - 旧 `session takeover` 在 adapter/transport 不一致时返回 `adapter_transport_mismatch`，不会再留下半迁移状态。
@@ -226,8 +229,11 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 
 - **Codex**：宿主 app-tools MCP，`role bind --transport codex_app_tools`；一个角色一个连接器。
 - **Qoder**：原生开发扩展 `agents-chat.native`，`role bind --transport qoder_native`；安装后普通启动 Qoder 即会加载，不操作输入框、不切聊天、不抢焦点。
+- **Qwen Code（实验性、显式启用）**：先在项目目录运行 `qwen serve` 并在 Web Shell 创建会话，再用 `qwen_native` 绑定该真实 session ID。连接器走 Qwen 官方 REST/SSE，先订阅事件再投递，按 `promptId` 关联 `turn_complete` / `turn_error`，不操作页面。
+- **Kimi Code（实验性、显式启用）**：使用仍在维护的 Node.js 版 `@moonshot-ai/kimi-code`，不是已停止维护的旧 Python `kimi-cli`。用户先登录并运行 `kimi web --no-open`，再用 `kimi_native` 绑定真实 session ID；连接器校验 live OpenAPI/AsyncAPI、精确 workspace 与已配置模型，先 `subscribe_v2` 再投递，并按 `triggerPromptId` 关联终态。仅允许 bearer 认证的回环地址，不操作 TUI/桌面输入框。
 - **OpenCode**：官方 MCP 提供当前真实 session ID，`opencode_native` 连接器用官方 CLI 把任务投进这个会话；无需 OAuth、审核或手工 pull。
 - **WorkBuddy**：本地 stdio MCP 拉取模式；运行 `workbuddy setup --project <项目>` 后，新聊天可领取任务、回传结果并给其他角色派活。
+- **Trae（暂不支持）**：Trae 支持 MCP、Skill 与 VSIX，但当前没有公开接口可定位真实聊天、向指定既有聊天主动投递消息并观察本轮完成；只能做需要聊天主动领取任务的 `mcp_pull`，体验不符合桌面聊天绑定目标，因此暂不提供 adapter、setup 或伪装成原生唤醒。
 - **DSH**：由宿主插件自动绑定，不需要 `join`。
 - 绑定是显式路由；绑定角色有排队/执行中任务时拒绝改绑，不会静默退回 CLI。
 
@@ -249,6 +255,8 @@ bus request|claim|renew|progress|blocked|result|verify|cancel|release|reassign|i
 mcp --agent ROLE [--project ID]
 workbuddy setup|status
 opencode setup|status
+qwen status [--session ID] [--root DIR] [--url URL]
+kimi status [--session ID] [--root DIR] [--url URL]
 ```
 
 所有命令支持 `--config`、`--state` 与 `--project`；在项目目录内可以省略，由 `.agents-chat/project.json` 自动解析。
@@ -303,7 +311,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 - 任务不能指定任意可执行程序或工作目录，这些由受信任的角色配置决定。
 - `succeeded` 只表示 Runtime 正常结束，不等于业务验收——仍要检查证据和副作用。
 - 模型仍调用厂商在线服务；空闲等待、去重、邮箱与路由由本地代码完成。
-- 桌面绑定依赖厂商版本相关入口，更新桌面应用后可能需要重新绑定或重启 Qoder 原生连接。
+- Qwen Code daemon 当前由官方标记为 Experimental，Agents Chat 因此不自动启动、不自动创建会话，也不把它当默认 transport；接入前必须显式运行 `qwen serve` 并绑定现有 session。默认 `127.0.0.1:4170` 的 trusted-loopback API 对同一用户进程具有完整执行权限，不要暴露到不可信网络。
+- Kimi Code Server API 同样是 Experimental；仅支持仍在维护的 Node.js Kimi Code CLI，不接入旧 Python `kimi-cli`。`kimi_native` 只接受 bearer 认证的回环服务并校验 live OpenAPI/AsyncAPI、精确 session/workspace 和模型；Kimi Code 会员或可用 provider 仍由用户提供。
+- 桌面绑定依赖厂商版本相关入口，更新桌面应用后可能需要重新绑定或重启 Qoder 原生连接；Qwen/Kimi Code 更新后会重新做 capability 探测，协议不满足时明确离线。
 - macOS 只在 Git bash 下验证过 `install.sh`，真实机器待验。
 - 可公开复现的检查记录见 [VERIFICATION.md](VERIFICATION.md)。
 
@@ -315,7 +325,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 python install.py                                  # 安装到默认位置
 python bridge.py --config config.local.json start  # 直接从源码起后台
 python bridge.py status
-python -m unittest discover -s tests -v            # 81 项测试
+python -m unittest discover -s tests -v            # 163 项测试
 python build_exe.py                                # 编译托盘与 CLI
 python build_portable.py                           # 生成便携包
 ```

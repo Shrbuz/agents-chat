@@ -68,7 +68,7 @@
 
 - 首次启动把游标定位到当前最新事件，不重放已经处理过的历史；
 - 游标是序号文件名；若总线被重建（序号从 1 重新开始）而游标仍是旧的高序号，启动/巡检会重置游标并补扫仍需要动作的任务；
-- 之后扫描各角色 `*_msg` 目录，对 `request`、`claim`、`result`、`blocked`、`cancel`、`release`、`reassign`、`verify(pass/fail)` 事件生成一次短唤醒任务；
+- 之后扫描各角色 `*_msg` 目录，先按任务最终投影过滤 closed/verify(pass)，再把同轮仍可执行的 `request`、`claim`、`result`、`blocked`、`cancel`、`release`、`reassign`、`verify(fail)` 按接收会话合并成短唤醒摘要；
 - 唤醒任务带 `notify=false`、`kind=agent_chat_wakeup`、`interrupt_on_timeout=false`，投递确认即完成，不进入结果邮箱，不产生二次派发；
 - 定时对“最新事件仍要求动作、但任务表里没有对应唤醒”的 pending/resolved/blocked 任务做一次补发，避免丢事件；重复事件按 `(sender, idem)` 幂等；
 - 角色已有其它排队/执行任务时**不再阻塞唤醒**：新事件照常入队，worker 串行处理；否则长任务会让游标永远停住；
@@ -82,6 +82,9 @@
 
 - **Codex**：宿主提供 app-tools MCP。连接器按角色启动，读取精简 turn 状态；跨聊天投递在目标轮次中表现为 `functionCallOutput`，因此按“新增轮次 + 发送工具 + 最终答案”固定。不是公开 REST API，宿主更新后可能需要重新准备。
 - **Qoder**：普通原生开发扩展 `agents-chat.native`，权限仅 `continueSession`、`metadata-only observeTurn`、`interruptTurn`。不读聊天全文，不操作输入框，不伪装内置通信扩展。任务完成时目标执行一次本地 `native-result` 短回执，扩展核对同一会话/轮次终态后才提交成功。
+- **Qwen Code（实验性）**：用户显式启动 `qwen serve` 并选择既有 session；连接器先做 capability/session/workspace 探测，再按官方协议先订阅 SSE、后提交 non-blocking prompt，以 `task_id` 作 idempotency key，并只接受同一 `promptId` 的终态。daemon 不在线、能力缺失、会话或工作区不匹配时明确 degraded，不创建替代会话、不回退 UI 自动化。
+- **Kimi Code（实验性）**：只支持仍在维护的 Node.js Kimi Code CLI。用户显式登录并启动 `kimi web`；连接器从实例注册表发现服务、从 Kimi 用户目录读取本机 bearer，校验 live OpenAPI/AsyncAPI、精确 session/workspace/模型，然后先建立 WebSocket `subscribe_v2` 再提交 prompt。终态必须与返回的 `prompt_id` / `triggerPromptId` 匹配，重连前以 transcript 稳定任务标记去重，取消精确到 prompt；只允许回环地址，不自动启动服务、不回退 TUI 自动化。
+- **OpenCode**：由官方 MCP 元数据提供真实 session ID，Hub 监督的连接器用官方 CLI 向该 session 投递，并以 session export 中的稳定任务标记处理恢复去重。
 - 连接器离线时明确失败，不静默回退 CLI；取消是协作式的，不承诺回滚已发生的文件修改。
 
 ### 托盘与便携

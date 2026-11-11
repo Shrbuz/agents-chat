@@ -54,6 +54,11 @@ class Store:
                     assignee TEXT, status TEXT, priority TEXT, sequence INTEGER,
                     lease_expires_at TEXT, updated_at TEXT, title TEXT, last_type TEXT,
                     PRIMARY KEY(project, task_id));
+                CREATE TABLE IF NOT EXISTS wakeup_deliveries (
+                    dedupe TEXT PRIMARY KEY, task_id TEXT NOT NULL,
+                    created REAL NOT NULL);
+                CREATE INDEX IF NOT EXISTS wakeup_delivery_task
+                    ON wakeup_deliveries(task_id);
             """)
             # A session can be retired explicitly (the user moved to a new chat).
             # Older databases predate the column, so add it defensively.
@@ -98,6 +103,144 @@ class Store:
     def enqueue(self, sender, target, key, payload):
         with self.db(True) as db:
             return self._enqueue(db, sender, target, key, payload)
+
+    def enqueue_wakeup(self, sender, target, key, payload, dedupe_keys):
+        """Atomically enqueue one summary and reserve every bus-event identity.
+
+        A wakeup task id is an implementation detail and can change after a
+        restart.  ``dedupe_keys`` instead contain the project, bus task, event
+        message/sequence and recipient session, so the same event cannot be
+        replayed merely because another wakeup id was generated.
+        """
+        values = list(dict.fromkeys(str(value) for value in dedupe_keys if value))
+        if not values:
+            raise ValueError("wakeup_dedupe_key_required")
+        with self.db(True) as db:
+            marks = ",".join("?" for _ in values)
+            rows = db.execute(
+                "SELECT dedupe,task_id FROM wakeup_deliveries WHERE dedupe IN (" + marks + ")",
+                values).fetchall()
+            if rows:
+                task_id = rows[0]["task_id"]
+                return task_id, True
+            task_id, duplicate = self._enqueue(db, sender, target, key, payload)
+            now = time.time()
+            db.executemany(
+                "INSERT OR IGNORE INTO wakeup_deliveries(dedupe,task_id,created) VALUES(?,?,?)",
+                [(value, task_id, now) for value in values])
+            return task_id, duplicate
+
+    def wakeup_tasks_for_keys(self, dedupe_keys):
+        values = list(dict.fromkeys(str(value) for value in dedupe_keys if value))
+        if not values:
+            return {}
+        marks = ",".join("?" for _ in values)
+        with self.db() as db:
+            rows = db.execute(
+                "SELECT d.dedupe,t.* FROM wakeup_deliveries d "
+                "JOIN tasks t ON t.id=d.task_id WHERE d.dedupe IN (" + marks + ")",
+                values).fetchall()
+        result = {}
+        for row in rows:
+            item = dict(row)
+            dedupe = item.pop("dedupe")
+            item["payload"] = json.loads(item["payload"])
+            item["result"] = json.loads(item["result"]) if item["result"] else None
+            result[dedupe] = item
+        return result
+
+    def bind_wakeup_keys(self, task_id, dedupe_keys):
+        """Attach new durable event identities to an older wakeup task."""
+        values = list(dict.fromkeys(str(value) for value in dedupe_keys if value))
+        with self.db(True) as db:
+            if not db.execute("SELECT 1 FROM tasks WHERE id=?", (task_id,)).fetchone():
+                raise KeyError("task_not_found")
+            now = time.time()
+            db.executemany(
+                "INSERT OR IGNORE INTO wakeup_deliveries(dedupe,task_id,created) VALUES(?,?,?)",
+                [(value, task_id, now) for value in values])
+
+    def collapse_active_wakeup_duplicates(self):
+        """Discard duplicate active notifications left by a version upgrade."""
+        with self.db(True) as db:
+            rows = db.execute(
+                "SELECT id,target,payload,result,created FROM tasks "
+                "WHERE state IN ('queued','running') ORDER BY created").fetchall()
+            mapped = {row[0] for row in db.execute("SELECT DISTINCT task_id FROM wakeup_deliveries")}
+            groups = {}
+            for row in rows:
+                try:
+                    payload = json.loads(row["payload"] or "{}")
+                    result = json.loads(row["result"] or "{}")
+                except ValueError:
+                    continue
+                if payload.get("kind") != "agent_chat_wakeup":
+                    continue
+                described = payload.get("bus_events") or []
+                if len(described) > 1:
+                    continue
+                event_id = (described[0].get("message_id") if described
+                            else payload.get("bus_event_id"))
+                if not event_id:
+                    continue
+                session = payload.get("recipient_session") or result.get("session_id") or row["target"]
+                groups.setdefault((row["target"], event_id, session), []).append(row)
+            dropped = []
+            for group in groups.values():
+                if len(group) < 2:
+                    continue
+                keep = next((row for row in reversed(group) if row["id"] in mapped), group[0])
+                for row in group:
+                    if row["id"] == keep["id"]:
+                        continue
+                    now = time.time()
+                    result = compact({
+                        "summary": "Duplicate wakeup collapsed during upgrade.",
+                        "discarded": True, "reason": "duplicate_wakeup",
+                        "kept_task_id": keep["id"]})
+                    db.execute("UPDATE tasks SET state='succeeded',ended=?,result=? WHERE id=?",
+                               (now, result, row["id"]))
+                    db.execute("INSERT INTO events(task_id,state,at) VALUES(?,?,?)",
+                               (row["id"], "succeeded", now))
+                    dropped.append(row["id"])
+            return dropped
+
+    def discard_bus_wakeups(self, project_id, task_ids, event_ids=()):
+        """Finish queued notifications whose authoritative bus task is closed.
+
+        Legacy wakeups did not carry project/task metadata, so ``event_ids`` is
+        also accepted to retire those queue entries without touching sessions.
+        Running deliveries are checked again by ``AgentChatBridge.prepare_wakeup``.
+        """
+        task_ids, event_ids = set(task_ids), set(event_ids)
+        if not task_ids and not event_ids:
+            return []
+        dropped = []
+        with self.db(True) as db:
+            rows = db.execute(
+                "SELECT id,payload FROM tasks WHERE state='queued'").fetchall()
+            for row in rows:
+                try:
+                    payload = json.loads(row["payload"] or "{}")
+                except ValueError:
+                    continue
+                if payload.get("kind") != "agent_chat_wakeup":
+                    continue
+                same_project = payload.get("project_id") == project_id
+                payload_tasks = set(payload.get("task_ids") or ())
+                legacy_event = payload.get("bus_event_id")
+                if not ((same_project and payload_tasks & task_ids) or legacy_event in event_ids):
+                    continue
+                result = compact({
+                    "summary": "Authoritative bus task is already closed; notification discarded.",
+                    "discarded": True, "reason": "bus_task_closed"})
+                now = time.time()
+                db.execute("UPDATE tasks SET state='succeeded',ended=?,result=? WHERE id=?",
+                           (now, result, row["id"]))
+                db.execute("INSERT INTO events(task_id,state,at) VALUES(?,?,?)",
+                           (row["id"], "succeeded", now))
+                dropped.append(row["id"])
+        return dropped
 
     @staticmethod
     def decode(row):

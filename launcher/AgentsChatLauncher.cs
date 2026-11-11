@@ -15,8 +15,8 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyDescription("Multi-project, multi-role local agent collaboration hub")]
 [assembly: AssemblyCompany("Agents Chat")]
 [assembly: AssemblyProduct("Agents Chat")]
-[assembly: AssemblyVersion("0.7.0.0")]
-[assembly: AssemblyFileVersion("0.7.0.0")]
+[assembly: AssemblyVersion("0.7.1.0")]
+[assembly: AssemblyFileVersion("0.7.1.0")]
 
 namespace AgentsChatLauncher
 {
@@ -1247,10 +1247,12 @@ namespace AgentsChatLauncher
                 case "runtime_missing": return "Codex 运行时失效";
                 case "app_tools_server_missing": return "App Tools 失效";
                 case "connection_context_missing": return "等待连接上下文";
-                case "service_unavailable": return "OpenCode 服务不可用";
-                case "session_missing": return "OpenCode 会话失效";
-                case "auth_required": return "OpenCode 待登录";
-                case "cli_missing": return "OpenCode CLI 缺失";
+                case "service_unavailable": return "宿主服务不可用";
+                case "session_missing": return "宿主会话失效";
+                case "auth_required": return "宿主待登录";
+                case "entitlement_required": return "套餐无 Kimi Code 权限";
+                case "model_not_configured": return "宿主模型未配置";
+                case "cli_missing": return "宿主 CLI 缺失";
                 case "degraded": return "连接异常";
                 case "offline": return "离线";
                 case "unbound": return "未绑定";

@@ -197,12 +197,22 @@ def _require_qoder_native(state):
             "restart Qoder after installing or repairing the Agents Chat connector")
 
 
-def _resolve_target_session(state, adapter, session, transport=None):
+def _resolve_target_session(state, adapter, session, transport=None, cwd=None):
     if transport == "qoder_native":
         # An explicit session id proves only that a chat once existed.  Require
         # the native extension heartbeat as well so join/takeover cannot report
         # success for a binding that has no live delivery path.
         _require_qoder_native(state)
+    if transport == "qwen_native" and session:
+        # A copied UUID is not enough: prove the exact session is live on a
+        # daemon that exposes the v1 prompt/SSE capabilities.
+        from .qwen import QwenDaemonClient
+        QwenDaemonClient().probe(session, cwd)
+    if transport == "kimi_native" and session:
+        # A copied id is not enough: validate the live experimental server,
+        # exact workspace and configured session model before binding it.
+        from .kimi import KimiWebClient
+        KimiWebClient().probe(session, cwd)
     if not session and adapter == "codex":
         session = os.environ.get("CODEX_THREAD_ID")
     elif not session and adapter == "dsh":
@@ -225,7 +235,7 @@ def _activate_target_client(state, config, adapter):
         capture_current_connection(state)
         if not select_connection(state):
             return "codex_connector_context_missing: register from a live Codex desktop chat"
-    if adapter in ("codex", "qoder"):
+    if adapter in ("codex", "qoder", "qwen", "kimi"):
         try:
             start_desktop_connectors(Path(state), config)
         except Exception as exc:  # A connector that cannot start must not undo a good migration.
@@ -475,7 +485,7 @@ def migrate_and_takeover(state, config, project, role, session=None, transport=N
     if not session and current_session:
         session = current_session
     if not transport:
-        raise ValueError("transport_required: pass --transport (codex_app_tools, qoder_native, opencode_native, dsh_plugin)")
+        raise ValueError("transport_required: pass --transport (codex_app_tools, qoder_native, qwen_native, kimi_native, opencode_native, dsh_plugin)")
     derived = adapter_for_transport(transport)
     if derived is None:
         raise ValueError("unsupported_desktop_transport: " + str(transport))
@@ -488,7 +498,8 @@ def migrate_and_takeover(state, config, project, role, session=None, transport=N
     if current_transport and session and session == current_session and transport != current_transport:
         raise ValueError("adapter_transport_mismatch: the current client uses transport="
                          + current_transport + ", not " + str(transport))
-    session = _resolve_target_session(state, target_adapter, session, transport)
+    session = _resolve_target_session(state, target_adapter, session, transport,
+                                      endpoint.get("cwd"))
     _check_codex_origin(state, target_adapter, session)
 
     if target_adapter == current_adapter:
@@ -597,7 +608,7 @@ def takeover_role(state, config, project, role, session=None, transport=None,
     if not session and current_session:
         session = current_session
     if not transport:
-        raise ValueError("transport_required: pass --transport (codex_app_tools, qoder_native, opencode_native, dsh_plugin)")
+        raise ValueError("transport_required: pass --transport (codex_app_tools, qoder_native, qwen_native, kimi_native, opencode_native, dsh_plugin)")
     derived = adapter_for_transport(transport)
     if derived is None:
         raise ValueError("unsupported_desktop_transport: " + str(transport))
@@ -616,7 +627,8 @@ def takeover_role(state, config, project, role, session=None, transport=None,
             + "; use `session migrate-and-takeover --role " + endpoint["role"]
             + " --adapter auto --transport " + str(transport)
             + "` so the adapter moves with the client")
-    session = _resolve_target_session(state, endpoint["adapter"], session, transport)
+    session = _resolve_target_session(state, endpoint["adapter"], session, transport,
+                                      endpoint.get("cwd"))
     _check_codex_origin(state, endpoint["adapter"], session)
     result = client.call("session_takeover", agent=internal, project=project,
                          session_id=session, transport=transport)
@@ -714,7 +726,8 @@ def join_role(state, config, project, role, session=None, transport=None,
             + " cannot be joined with transport=" + str(transport)
             + "; rerun with --migrate-adapter (or use session migrate-and-takeover)"
             + " so the adapter moves with the client")
-    session = _resolve_target_session(state, role_adapter, session, transport)
+    session = _resolve_target_session(state, role_adapter, session, transport,
+                                      endpoint.get("cwd"))
     _check_codex_origin(state, role_adapter, session)
     client = client or Client(state)
     result = client.call("desktop_bind", agent=internal, project=project,
@@ -996,6 +1009,18 @@ def parser():
     opencode_setup.add_argument("--no-restart", action="store_true")
     opencode_status_parser = opencode_sub.add_parser("status")
     opencode_status_parser.add_argument("--root")
+    qwen = sub.add_parser("qwen", help="Inspect the experimental Qwen Code daemon transport")
+    qwen_sub = qwen.add_subparsers(dest="qwen_command", required=True)
+    qwen_status_parser = qwen_sub.add_parser("status")
+    qwen_status_parser.add_argument("--session")
+    qwen_status_parser.add_argument("--root")
+    qwen_status_parser.add_argument("--url")
+    kimi = sub.add_parser("kimi", help="Inspect the experimental Kimi Code Web transport")
+    kimi_sub = kimi.add_subparsers(dest="kimi_command", required=True)
+    kimi_status_parser = kimi_sub.add_parser("status")
+    kimi_status_parser.add_argument("--session")
+    kimi_status_parser.add_argument("--root")
+    kimi_status_parser.add_argument("--url")
     return p
 
 
@@ -1132,6 +1157,18 @@ def main():
             result = workbuddy_command(args, config, state, project)
         elif args.command == "opencode":
             result = opencode_command(args, config, state, project)
+        elif args.command == "qwen":
+            from .qwen import qwen_status
+            result = qwen_status(args.session, args.root, args.url)
+            normalized = read_config(config)
+            result["roles"] = [address for address, endpoint in normalized["endpoints"].items()
+                               if endpoint["adapter"] == "qwen"]
+        elif args.command == "kimi":
+            from .kimi import kimi_status
+            result = kimi_status(args.session, args.root, args.url)
+            normalized = read_config(config)
+            result["roles"] = [address for address, endpoint in normalized["endpoints"].items()
+                               if endpoint["adapter"] == "kimi"]
         else:
             raise ValueError("unknown_command")
         print(compact(result))
