@@ -1,0 +1,838 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Agents Chat · 托盘与状态窗口设计稿</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --page: #090b0d;
+      --window: #101316;
+      --surface-1: #15191d;
+      --surface-2: #1a1f24;
+      --surface-3: #20262c;
+      --line: #2a3138;
+      --line-strong: #39424b;
+      --text: #edf2f4;
+      --text-2: #a9b3ba;
+      --text-3: #6f7b84;
+      --accent: #63ddd0;
+      --accent-ink: #062e2b;
+      --good: #63ddd0;
+      --busy: #83b7ff;
+      --warn: #f2bd66;
+      --bad: #f07c78;
+      --offline: #69747c;
+      --radius-control: 8px;
+      --radius-card: 12px;
+      --radius-panel: 16px;
+      --shadow-window: 0 28px 80px rgba(0, 0, 0, .42), 0 2px 12px rgba(0, 0, 0, .3);
+      font-family: "Segoe UI Variable Text", "Microsoft YaHei UI", "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html, body { min-height: 100%; }
+    body {
+      margin: 0;
+      background: var(--page);
+      color: var(--text);
+      overflow-x: auto;
+    }
+    button, input { font: inherit; }
+    button { color: inherit; }
+    svg { display: block; }
+    .hidden { display: none !important; }
+
+    .design-shell {
+      min-width: 1220px;
+      min-height: 100vh;
+      padding: 24px;
+    }
+    .design-header {
+      width: min(1380px, calc(100vw - 48px));
+      min-width: 1172px;
+      margin: 0 auto 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 24px;
+    }
+    .design-title { display: flex; align-items: center; gap: 12px; }
+    .design-title h1 { margin: 0; font-size: 18px; line-height: 24px; font-weight: 600; }
+    .design-title p { margin: 2px 0 0; color: var(--text-3); font-size: 12px; line-height: 16px; }
+    .prototype-badge {
+      height: 24px;
+      padding: 0 9px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      color: var(--text-2);
+      font: 500 11px/22px "Cascadia Mono", monospace;
+    }
+    .view-tabs {
+      display: flex;
+      padding: 4px;
+      gap: 4px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface-1);
+    }
+    .view-tab {
+      height: 32px;
+      padding: 0 14px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text-2);
+      cursor: pointer;
+      transition: color 140ms ease, background-color 140ms ease;
+    }
+    .view-tab:hover { color: var(--text); background: var(--surface-2); }
+    .view-tab.active { color: var(--text); background: var(--surface-3); }
+    .artboard {
+      position: relative;
+      width: min(1380px, calc(100vw - 48px));
+      min-width: 1172px;
+      height: 820px;
+      margin: 0 auto;
+      overflow: hidden;
+      border: 1px solid #171c20;
+      border-radius: 20px;
+      background: #0c0f11;
+    }
+    .view { width: 100%; height: 100%; }
+
+    /* Shared icon language */
+    .brand-mark {
+      position: relative;
+      width: 32px;
+      height: 32px;
+      flex: 0 0 auto;
+      color: var(--accent);
+    }
+    .brand-mark svg { width: 100%; height: 100%; }
+    .brand-mark.small { width: 24px; height: 24px; }
+    .brand-mark.large { width: 120px; height: 120px; }
+    .icon { width: 16px; height: 16px; flex: 0 0 auto; }
+    .icon-18 { width: 18px; height: 18px; flex: 0 0 auto; }
+
+    /* Main status window */
+    .app-window {
+      position: absolute;
+      inset: 32px;
+      display: grid;
+      grid-template-columns: 232px minmax(0, 1fr);
+      grid-template-rows: 56px minmax(0, 1fr);
+      overflow: hidden;
+      border: 1px solid var(--line-strong);
+      border-radius: 14px;
+      background: var(--window);
+      box-shadow: var(--shadow-window);
+    }
+    .titlebar {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: 232px 1fr auto;
+      align-items: center;
+      border-bottom: 1px solid var(--line);
+      background: #111518;
+    }
+    .app-brand {
+      height: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 16px;
+      border-right: 1px solid var(--line);
+    }
+    .app-name { font-size: 14px; font-weight: 600; line-height: 20px; }
+    .app-subtitle { color: var(--text-3); font: 11px/14px "Cascadia Mono", monospace; }
+    .window-context {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 20px;
+    }
+    .window-context h2 {
+      margin: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 14px;
+      line-height: 20px;
+      font-weight: 500;
+    }
+    .live-status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: var(--text-2);
+      font-size: 12px;
+    }
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      flex: 0 0 auto;
+      border-radius: 50%;
+      background: var(--offline);
+    }
+    .status-dot.good { background: var(--good); }
+    .status-dot.busy { background: var(--busy); }
+    .status-dot.warn { background: var(--warn); }
+    .status-dot.bad { background: var(--bad); }
+    .status-dot.live {
+      box-shadow: 0 0 0 0 rgba(99, 221, 208, .36);
+      animation: live-ring 2.2s ease-out infinite;
+    }
+    @keyframes live-ring {
+      0%, 44% { box-shadow: 0 0 0 0 rgba(99, 221, 208, .34); }
+      76%, 100% { box-shadow: 0 0 0 5px rgba(99, 221, 208, 0); }
+    }
+    .window-controls { display: flex; align-items: stretch; height: 100%; }
+    .window-control {
+      width: 46px;
+      border: 0;
+      border-left: 1px solid transparent;
+      background: transparent;
+      color: var(--text-3);
+      cursor: pointer;
+    }
+    .window-control:hover { background: var(--surface-2); color: var(--text); }
+    .window-control.close:hover { background: #b84b4b; color: #fff; }
+    .sidebar {
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+      padding: 16px 12px 12px;
+      border-right: 1px solid var(--line);
+      background: #111518;
+    }
+    .sidebar-label {
+      margin: 0 8px 8px;
+      color: var(--text-3);
+      font-size: 11px;
+      line-height: 16px;
+    }
+    .project-list { display: flex; flex-direction: column; gap: 4px; }
+    .project-row {
+      width: 100%;
+      height: 40px;
+      display: grid;
+      grid-template-columns: 18px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 0 10px;
+      border: 1px solid transparent;
+      border-radius: 9px;
+      background: transparent;
+      color: var(--text-2);
+      text-align: left;
+      cursor: pointer;
+      transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
+    }
+    .project-row:hover { color: var(--text); background: var(--surface-1); }
+    .project-row.active { color: var(--text); border-color: var(--line); background: var(--surface-2); }
+    .project-row span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .project-count { color: var(--text-3); font: 11px/16px "Cascadia Mono", monospace; }
+    .sidebar-spacer { flex: 1; }
+    .health-card {
+      padding: 12px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--surface-1);
+    }
+    .health-title { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .health-title strong { font-size: 12px; font-weight: 500; }
+    .health-card p { margin: 8px 0 0; color: var(--text-3); font-size: 11px; line-height: 16px; }
+    .sidebar-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 8px 0;
+      color: var(--text-3);
+      font: 11px/16px "Cascadia Mono", monospace;
+    }
+    .main-content {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 308px;
+      grid-template-rows: auto minmax(0, 1fr);
+      gap: 16px;
+      padding: 20px;
+      background: #0e1215;
+    }
+    .summary-strip {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .metric {
+      min-width: 0;
+      padding: 12px 14px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface-1);
+    }
+    .metric-label { color: var(--text-3); font-size: 11px; line-height: 16px; }
+    .metric-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin-top: 3px; }
+    .metric-value { font: 500 21px/28px "Cascadia Mono", "Segoe UI", monospace; font-variant-numeric: tabular-nums; }
+    .metric-note { overflow: hidden; color: var(--text-3); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+    .metric-value.accent { color: var(--accent); }
+    .workspace {
+      min-width: 0;
+      min-height: 0;
+      display: grid;
+      grid-template-rows: minmax(0, 1fr) 172px;
+      gap: 16px;
+    }
+    .topology-card, .activity-card, .detail-card {
+      border: 1px solid var(--line);
+      border-radius: var(--radius-panel);
+      background: var(--surface-1);
+      overflow: hidden;
+    }
+    .card-header {
+      height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 16px;
+      border-bottom: 1px solid var(--line);
+    }
+    .card-title { display: flex; align-items: center; gap: 9px; }
+    .card-title h3 { margin: 0; font-size: 13px; line-height: 20px; font-weight: 500; }
+    .card-meta { color: var(--text-3); font: 11px/16px "Cascadia Mono", monospace; }
+    .legend { display: flex; align-items: center; gap: 12px; color: var(--text-3); font-size: 11px; }
+    .legend span { display: inline-flex; align-items: center; gap: 6px; }
+    .legend i { width: 6px; height: 6px; border-radius: 50%; background: var(--offline); }
+    .legend i.good { background: var(--good); }
+    .legend i.busy { background: var(--busy); }
+    .legend i.warn { background: var(--warn); }
+    .topology-stage { position: relative; height: calc(100% - 48px); min-height: 300px; }
+    .topology-stage > svg { width: 100%; height: 100%; }
+    .topology-grid line { stroke: #1d2328; stroke-width: 1; }
+    .route { fill: none; stroke: #374149; stroke-width: 1.25; stroke-dasharray: 3 6; }
+    .route.active { stroke: #4a8581; }
+    .route.warning { stroke: #78633e; }
+    .route-pulse { fill: var(--accent); }
+    .route-pulse.busy { fill: var(--busy); }
+    .route-pulse.warn { fill: var(--warn); }
+    .hub-orbit { fill: #12181b; stroke: #2f3b3f; stroke-width: 1; }
+    .hub-core { fill: #173633; stroke: var(--accent); stroke-width: 1.5; }
+    .hub-mark { color: var(--accent); }
+    .topology-node {
+      position: absolute;
+      width: 156px;
+      min-height: 58px;
+      display: grid;
+      grid-template-columns: 34px minmax(0, 1fr);
+      align-items: center;
+      gap: 10px;
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: #161b1f;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+      box-shadow: 0 8px 20px rgba(0, 0, 0, .18);
+      transition: transform 140ms ease, border-color 140ms ease, background-color 140ms ease;
+    }
+    .topology-node:hover { transform: translateY(-2px); border-color: var(--line-strong); background: #1a2025; }
+    .topology-node.active { border-color: #4b736f; background: #19211f; }
+    .node-avatar {
+      position: relative;
+      width: 34px;
+      height: 34px;
+      display: grid;
+      place-items: center;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: var(--surface-3);
+      color: var(--text-2);
+      font: 500 12px/1 "Cascadia Mono", monospace;
+      text-transform: uppercase;
+    }
+    .node-avatar .status-dot { position: absolute; right: -2px; bottom: -2px; border: 2px solid #161b1f; }
+    .node-name { overflow: hidden; font-size: 12px; line-height: 17px; font-weight: 500; text-overflow: ellipsis; white-space: nowrap; }
+    .node-state { display: flex; align-items: center; gap: 6px; margin-top: 2px; color: var(--text-3); font: 10px/14px "Cascadia Mono", monospace; }
+    .node-state .mini-bar { width: 28px; height: 3px; overflow: hidden; border-radius: 2px; background: #2a3035; }
+    .node-state .mini-bar i { display: block; width: 64%; height: 100%; background: var(--busy); animation: task-progress 2.8s ease-in-out infinite alternate; }
+    @keyframes task-progress { from { transform: translateX(-72%); } to { transform: translateX(56%); } }
+    .node-leader { left: 5%; top: 16%; }
+    .node-frontend { right: 5%; top: 15%; }
+    .node-backend { right: 4%; bottom: 13%; }
+    .node-tester { left: 6%; bottom: 12%; }
+    .hub-caption {
+      position: absolute;
+      left: 50%; top: 50%;
+      transform: translate(-50%, 50px);
+      color: var(--text-3);
+      font: 10px/14px "Cascadia Mono", monospace;
+      pointer-events: none;
+    }
+    .activity-card { min-height: 0; }
+    .activity-card .card-header { height: 40px; }
+    .activity-list { display: grid; grid-template-columns: 1fr 1fr; gap: 0 20px; padding: 6px 16px 10px; }
+    .activity-row {
+      min-width: 0;
+      height: 52px;
+      display: grid;
+      grid-template-columns: 8px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      border-bottom: 1px solid #232a30;
+    }
+    .activity-row:nth-last-child(-n + 2) { border-bottom: 0; }
+    .activity-copy { min-width: 0; }
+    .activity-title { overflow: hidden; color: var(--text-2); font-size: 11px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+    .activity-title strong { color: var(--text); font-weight: 500; }
+    .activity-sub { overflow: hidden; margin-top: 1px; color: var(--text-3); font: 10px/14px "Cascadia Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .activity-time { color: var(--text-3); font: 10px/14px "Cascadia Mono", monospace; font-variant-numeric: tabular-nums; }
+    .detail-card { min-height: 0; display: flex; flex-direction: column; }
+    .detail-head { padding: 18px 18px 16px; border-bottom: 1px solid var(--line); }
+    .detail-role { display: flex; align-items: center; gap: 12px; }
+    .detail-role .node-avatar { width: 40px; height: 40px; }
+    .detail-role h3 { margin: 0; font-size: 15px; line-height: 20px; font-weight: 600; }
+    .detail-role p { margin: 2px 0 0; color: var(--text-3); font: 10px/14px "Cascadia Mono", monospace; }
+    .detail-status {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-top: 16px;
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #12171a;
+    }
+    .detail-status span:first-child { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+    .detail-status span:last-child { color: var(--text-3); font: 10px/14px "Cascadia Mono", monospace; }
+    .detail-body { flex: 1; min-height: 0; padding: 8px 18px 12px; overflow: auto; }
+    .detail-section { padding: 12px 0; border-bottom: 1px solid #242b31; }
+    .detail-section:last-child { border-bottom: 0; }
+    .detail-section-label { margin-bottom: 8px; color: var(--text-3); font-size: 10px; line-height: 14px; }
+    .definition-list { display: grid; grid-template-columns: 88px minmax(0, 1fr); gap: 8px 12px; margin: 0; }
+    .definition-list dt { color: var(--text-3); font-size: 11px; }
+    .definition-list dd { margin: 0; overflow: hidden; color: var(--text-2); font: 11px/16px "Cascadia Mono", monospace; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+    .responsibility { margin: 0; color: var(--text-2); font-size: 11px; line-height: 18px; }
+    .detail-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding: 12px 18px 16px; border-top: 1px solid var(--line); }
+    .button {
+      height: 34px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 0 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: var(--radius-control);
+      background: var(--surface-2);
+      color: var(--text-2);
+      font-size: 11px;
+      cursor: pointer;
+      transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease, transform 80ms ease;
+    }
+    .button:hover { color: var(--text); border-color: #4a555f; background: var(--surface-3); }
+    .button:active { transform: scale(.98); }
+    .button.primary { border-color: var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+    .button.primary:hover { background: #78e6da; }
+    .button.ghost { border-color: transparent; background: transparent; }
+
+    /* Tray popover */
+    .tray-desktop {
+      position: relative;
+      width: 100%; height: 100%;
+      background: #0c1013;
+    }
+    .tray-caption {
+      position: absolute;
+      left: 72px; top: 70px;
+      width: 430px;
+    }
+    .tray-caption .eyebrow { color: var(--accent); font: 500 11px/16px "Cascadia Mono", monospace; }
+    .tray-caption h2 { width: 420px; margin: 12px 0 10px; font-size: 34px; line-height: 42px; font-weight: 500; letter-spacing: -.6px; }
+    .tray-caption p { width: 390px; margin: 0; color: var(--text-2); font-size: 14px; line-height: 24px; }
+    .tray-note-list { display: grid; gap: 12px; margin-top: 28px; }
+    .tray-note { display: grid; grid-template-columns: 24px 1fr; gap: 10px; color: var(--text-2); font-size: 12px; line-height: 18px; }
+    .tray-note .index { color: var(--text-3); font: 11px/18px "Cascadia Mono", monospace; }
+    .taskbar {
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      height: 48px;
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding: 0 22px;
+      border-top: 1px solid #222a30;
+      background: #12171b;
+    }
+    .taskbar-tray { display: flex; align-items: center; gap: 14px; color: var(--text-3); }
+    .mini-tray-icon { width: 20px; height: 20px; color: var(--accent); }
+    .clock { font: 11px/14px "Segoe UI", sans-serif; text-align: right; color: var(--text-2); }
+    .tray-popover {
+      position: absolute;
+      right: 28px; bottom: 60px;
+      width: 382px;
+      height: 698px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      border: 1px solid var(--line-strong);
+      border-radius: 16px;
+      background: #111518;
+      box-shadow: var(--shadow-window);
+    }
+    .tray-head { padding: 16px 16px 12px; border-bottom: 1px solid var(--line); }
+    .tray-brand-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+    .tray-brand { display: flex; align-items: center; gap: 10px; }
+    .tray-brand strong { display: block; font-size: 13px; line-height: 18px; font-weight: 600; }
+    .tray-brand small { display: block; margin-top: 1px; color: var(--text-3); font: 10px/14px "Cascadia Mono", monospace; }
+    .icon-button {
+      width: 30px; height: 30px;
+      display: grid; place-items: center;
+      border: 1px solid transparent;
+      border-radius: 8px;
+      background: transparent;
+      color: var(--text-3);
+      cursor: pointer;
+    }
+    .icon-button:hover { border-color: var(--line); background: var(--surface-2); color: var(--text); }
+    .tray-summary { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 14px; }
+    .tray-metric { padding: 9px 10px; border: 1px solid var(--line); border-radius: 9px; background: var(--surface-1); }
+    .tray-metric b { display: block; font: 500 16px/20px "Cascadia Mono", monospace; }
+    .tray-metric span { display: block; margin-top: 2px; color: var(--text-3); font-size: 10px; line-height: 14px; }
+    .tray-warning {
+      display: flex; align-items: center; gap: 8px;
+      margin-top: 10px; padding: 8px 10px;
+      border: 1px solid #5d4c31;
+      border-radius: 9px;
+      background: #1e1a14;
+      color: #e7c387;
+      font-size: 11px; line-height: 16px;
+    }
+    .tray-projects { flex: 1; min-height: 0; overflow: auto; padding: 8px; }
+    .tray-project { padding: 6px 0; }
+    .tray-project-title {
+      height: 28px;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 0 8px;
+      color: var(--text-3);
+      font-size: 10px; line-height: 14px;
+    }
+    .tray-project-title span:last-child { font-family: "Cascadia Mono", monospace; }
+    .tray-session {
+      width: 100%;
+      min-height: 50px;
+      display: grid;
+      grid-template-columns: 32px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      padding: 7px 8px;
+      border: 1px solid transparent;
+      border-radius: 10px;
+      background: transparent;
+      color: var(--text);
+      text-align: left;
+      cursor: pointer;
+    }
+    .tray-session:hover { border-color: var(--line); background: var(--surface-1); }
+    .tray-avatar { position: relative; width: 32px; height: 32px; display: grid; place-items: center; border-radius: 9px; background: var(--surface-3); color: var(--text-2); font: 500 10px/1 "Cascadia Mono", monospace; text-transform: uppercase; }
+    .tray-avatar .status-dot { position: absolute; right: -2px; bottom: -2px; border: 2px solid #111518; }
+    .tray-session-copy { min-width: 0; }
+    .tray-session-name { display: block; overflow: hidden; font-size: 12px; line-height: 16px; text-overflow: ellipsis; white-space: nowrap; }
+    .tray-session-meta { display: block; overflow: hidden; margin-top: 2px; color: var(--text-3); font: 10px/14px "Cascadia Mono", monospace; text-overflow: ellipsis; white-space: nowrap; }
+    .tray-state { color: var(--text-3); font-size: 10px; line-height: 14px; }
+    .tray-state.busy { color: var(--busy); }
+    .tray-state.warn { color: var(--warn); }
+    .tray-footer { display: grid; grid-template-columns: 1fr auto auto; gap: 8px; padding: 12px; border-top: 1px solid var(--line); background: #101417; }
+
+    /* Icon board */
+    .icon-board { width: 100%; height: 100%; padding: 48px; background: #0c0f11; }
+    .icon-board-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 24px; }
+    .icon-board h2 { margin: 0; font-size: 28px; line-height: 36px; font-weight: 500; }
+    .icon-board-header p { width: 520px; margin: 8px 0 0; color: var(--text-2); font-size: 13px; line-height: 21px; }
+    .token-note { color: var(--text-3); font: 11px/18px "Cascadia Mono", monospace; text-align: right; }
+    .icon-grid { display: grid; grid-template-columns: 1.1fr 1fr; grid-template-rows: 330px 260px; gap: 16px; margin-top: 28px; }
+    .icon-panel { padding: 24px; border: 1px solid var(--line); border-radius: 16px; background: var(--surface-1); }
+    .icon-panel h3 { margin: 0; font-size: 13px; line-height: 20px; font-weight: 500; }
+    .icon-panel > p { margin: 4px 0 0; color: var(--text-3); font-size: 11px; line-height: 17px; }
+    .mark-showcase { display: flex; align-items: center; justify-content: center; gap: 48px; height: 230px; }
+    .large-mark-tile { width: 176px; height: 176px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: 40px; background: #101417; }
+    .mark-construction { width: 260px; }
+    .mark-construction svg { width: 240px; height: 180px; }
+    .mark-construction p { margin: 8px 0 0; color: var(--text-3); font: 10px/16px "Cascadia Mono", monospace; }
+    .state-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-top: 24px; }
+    .state-swatch { padding: 18px 12px; border: 1px solid var(--line); border-radius: 12px; background: #111518; text-align: center; }
+    .state-swatch svg { width: 48px; height: 48px; margin: 0 auto; }
+    .state-swatch strong { display: block; margin-top: 12px; font-size: 11px; line-height: 16px; font-weight: 500; }
+    .state-swatch small { display: block; margin-top: 2px; color: var(--text-3); font: 9px/14px "Cascadia Mono", monospace; }
+    .size-row { display: flex; align-items: flex-end; gap: 40px; height: 172px; padding: 24px 8px 0; }
+    .size-sample { display: grid; justify-items: center; gap: 14px; color: var(--text-3); font: 10px/14px "Cascadia Mono", monospace; }
+    .size-sample svg { color: var(--accent); }
+    .tray-preview { display: flex; align-items: center; justify-content: space-between; gap: 24px; height: 178px; }
+    .mock-taskbar { width: 340px; height: 52px; display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 0 14px; border: 1px solid var(--line); border-radius: 10px; background: #101417; }
+    .mock-taskbar .mini-tray-icon { width: 18px; height: 18px; }
+    .tray-preview-copy { width: 190px; color: var(--text-2); font-size: 11px; line-height: 18px; }
+
+    .toast {
+      position: absolute;
+      left: 50%; bottom: 28px;
+      transform: translate(-50%, 16px);
+      display: flex; align-items: center; gap: 9px;
+      padding: 10px 12px;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      background: #171c20;
+      color: var(--text-2);
+      box-shadow: 0 12px 30px rgba(0,0,0,.34);
+      font-size: 11px;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 180ms ease, transform 180ms ease;
+      z-index: 50;
+    }
+    .toast.show { opacity: 1; transform: translate(-50%, 0); }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: 1ms !important; }
+    }
+  </style>
+</head>
+<body>
+  <svg width="0" height="0" aria-hidden="true" style="position:absolute">
+    <defs>
+      <symbol id="mark" viewBox="0 0 64 64">
+        <path d="M18 18.5 32 10l14 8.5v16.8L32 44 18 35.3Z" fill="none" stroke="currentColor" stroke-width="4" stroke-linejoin="round"/>
+        <circle cx="18" cy="18.5" r="5" fill="currentColor"/>
+        <circle cx="46" cy="18.5" r="5" fill="currentColor"/>
+        <circle cx="32" cy="44" r="5" fill="currentColor"/>
+        <circle cx="32" cy="28" r="6.5" fill="currentColor"/>
+        <path d="M22.5 21.2 27 24M41.5 21.2 37 24M32 34.5V39" stroke="#0f1316" stroke-width="3" stroke-linecap="round"/>
+      </symbol>
+      <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 7v5h-5M4 17v-5h5M6.1 8.1A7 7 0 0 1 18.6 7L20 12M4 12l1.4 5A7 7 0 0 0 17.9 15.9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-folder" viewBox="0 0 24 24"><path d="M3 6.5h6l2 2h10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+      <symbol id="i-switch" viewBox="0 0 24 24"><path d="m8 7-4 4 4 4M4 11h12M16 17l4-4-4-4M20 13H8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24"><path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9M10 21h4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-network" viewBox="0 0 24 24"><circle cx="12" cy="5" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="5" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><circle cx="19" cy="18" r="2.5" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="m10.8 7.2-4.6 8.6m7-8.6 4.6 8.6M7.5 18h9" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+      <symbol id="i-project" viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h6v6h-6z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></symbol>
+      <symbol id="i-warning" viewBox="0 0 24 24"><path d="m12 3 9 17H3Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/><path d="M12 9v4m0 3.5v.5" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3" fill="none" stroke="currentColor" stroke-width="1.7"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" fill="none" stroke="currentColor" stroke-width="1.25" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+      <symbol id="i-more" viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3" fill="currentColor"/><circle cx="12" cy="12" r="1.3" fill="currentColor"/><circle cx="19" cy="12" r="1.3" fill="currentColor"/></symbol>
+      <symbol id="i-minus" viewBox="0 0 24 24"><path d="M5 12h14" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></symbol>
+      <symbol id="i-square" viewBox="0 0 24 24"><path d="M7 7h10v10H7z" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+      <symbol id="i-x" viewBox="0 0 24 24"><path d="m7 7 10 10M17 7 7 17" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></symbol>
+      <symbol id="i-power" viewBox="0 0 24 24"><path d="M12 2v10M7.1 5.5A8 8 0 1 0 17 5.7" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"/></symbol>
+    </defs>
+  </svg>
+
+  <main class="design-shell">
+    <header class="design-header">
+      <div class="design-title">
+        <div class="brand-mark small"><svg><use href="#mark"/></svg></div>
+        <div><h1>Agents Chat · 信号中继台</h1><p>托盘、会话状态窗口与动态图标设计稿</p></div>
+        <span class="prototype-badge">CONCEPT 01</span>
+      </div>
+      <nav class="view-tabs" aria-label="设计稿画板">
+        <button class="view-tab active" data-view="status">状态窗口</button>
+        <button class="view-tab" data-view="tray">托盘面板</button>
+        <button class="view-tab" data-view="icons">图标系统</button>
+      </nav>
+    </header>
+
+    <section class="artboard">
+      <div class="view" id="view-status">
+        <div class="app-window">
+          <header class="titlebar">
+            <div class="app-brand">
+              <div class="brand-mark small"><svg><use href="#mark"/></svg></div>
+              <div><div class="app-name">Agents Chat</div><div class="app-subtitle">LOCAL RELAY</div></div>
+            </div>
+            <div class="window-context">
+              <h2>会话状态</h2>
+              <span class="live-status"><i class="status-dot good live"></i>中枢运行中</span>
+            </div>
+            <div class="window-controls">
+              <button class="window-control"><svg class="icon"><use href="#i-minus"/></svg></button>
+              <button class="window-control"><svg class="icon"><use href="#i-square"/></svg></button>
+              <button class="window-control close"><svg class="icon"><use href="#i-x"/></svg></button>
+            </div>
+          </header>
+
+          <aside class="sidebar">
+            <div class="sidebar-label">项目</div>
+            <div class="project-list">
+              <button class="project-row"><svg class="icon"><use href="#i-network"/></svg><span>全部会话</span><span class="project-count">13</span></button>
+              <button class="project-row active"><svg class="icon"><use href="#i-project"/></svg><span>这一页</span><span class="project-count">6</span></button>
+              <button class="project-row"><svg class="icon"><use href="#i-project"/></svg><span>wengan-cemetery</span><span class="project-count">4</span></button>
+              <button class="project-row"><svg class="icon"><use href="#i-project"/></svg><span>默认项目</span><span class="project-count">3</span></button>
+            </div>
+            <div class="sidebar-spacer"></div>
+            <div class="health-card">
+              <div class="health-title"><strong>中继健康度</strong><span class="live-status"><i class="status-dot warn"></i>需留意</span></div>
+              <p>2 个原生会话离线；Codex 会话与任务队列正常</p>
+            </div>
+            <div class="sidebar-footer"><span>v0.7.0</span><button class="icon-button" data-action="打开设置"><svg class="icon"><use href="#i-settings"/></svg></button></div>
+          </aside>
+
+          <section class="main-content">
+            <div class="summary-strip">
+              <article class="metric"><div class="metric-label">在线角色</div><div class="metric-row"><strong class="metric-value accent">5</strong><span class="metric-note">6 个角色</span></div></article>
+              <article class="metric"><div class="metric-label">执行中</div><div class="metric-row"><strong class="metric-value">1</strong><span class="metric-note">frontend</span></div></article>
+              <article class="metric"><div class="metric-label">等待任务</div><div class="metric-row"><strong class="metric-value">0</strong><span class="metric-note">队列已清空</span></div></article>
+              <article class="metric"><div class="metric-label">最近投递</div><div class="metric-row"><strong class="metric-value">8s</strong><span class="metric-note">tester → leader</span></div></article>
+            </div>
+
+            <div class="workspace">
+              <article class="topology-card">
+                <header class="card-header">
+                  <div class="card-title"><svg class="icon-18"><use href="#i-network"/></svg><h3>实时会话拓扑</h3><span class="card-meta">这一页</span></div>
+                  <div class="legend"><span><i class="good"></i>在线</span><span><i class="busy"></i>执行中</span><span><i class="warn"></i>需留意</span></div>
+                </header>
+                <div class="topology-stage">
+                  <svg viewBox="0 0 720 360" preserveAspectRatio="none" aria-hidden="true">
+                    <g class="topology-grid">
+                      <line x1="0" y1="90" x2="720" y2="90"/><line x1="0" y1="180" x2="720" y2="180"/><line x1="0" y1="270" x2="720" y2="270"/>
+                      <line x1="180" y1="0" x2="180" y2="360"/><line x1="360" y1="0" x2="360" y2="360"/><line x1="540" y1="0" x2="540" y2="360"/>
+                    </g>
+                    <path id="route-leader" class="route active" d="M155 91 C240 106 284 134 360 180"/>
+                    <path id="route-front" class="route active" d="M565 90 C482 107 438 136 360 180"/>
+                    <path id="route-back" class="route" d="M568 282 C476 261 430 220 360 180"/>
+                    <path id="route-test" class="route warning" d="M156 282 C250 262 298 220 360 180"/>
+                    <circle class="route-pulse" r="3.2"><animateMotion dur="2.8s" repeatCount="indefinite" path="M155 91 C240 106 284 134 360 180"/></circle>
+                    <circle class="route-pulse busy" r="3.2"><animateMotion dur="2.2s" repeatCount="indefinite" path="M565 90 C482 107 438 136 360 180"/></circle>
+                    <circle class="route-pulse warn" r="3.2"><animateMotion dur="4.6s" repeatCount="indefinite" path="M360 180 C298 220 250 262 156 282"/></circle>
+                    <circle class="hub-orbit" cx="360" cy="180" r="54"/>
+                    <circle class="hub-core" cx="360" cy="180" r="36"/>
+                    <svg class="hub-mark" x="340" y="160" width="40" height="40"><use href="#mark"/></svg>
+                  </svg>
+                  <button class="topology-node node-leader" data-session="leader"><span class="node-avatar">LE<i class="status-dot good"></i></span><span><span class="node-name">leader</span><span class="node-state">在线 · 8 秒前</span></span></button>
+                  <button class="topology-node node-frontend active" data-session="frontend"><span class="node-avatar">FE<i class="status-dot busy live"></i></span><span><span class="node-name">frontend</span><span class="node-state"><span class="mini-bar"><i></i></span>执行中</span></span></button>
+                  <button class="topology-node node-backend" data-session="backend"><span class="node-avatar">BE<i class="status-dot good"></i></span><span><span class="node-name">backend</span><span class="node-state">在线 · 2 分钟前</span></span></button>
+                  <button class="topology-node node-tester" data-session="tester"><span class="node-avatar">TE<i class="status-dot warn"></i></span><span><span class="node-name">tester</span><span class="node-state">待确认 · 1 项</span></span></button>
+                  <span class="hub-caption">BROKER · 23ms</span>
+                </div>
+              </article>
+
+              <article class="activity-card">
+                <header class="card-header"><div class="card-title"><h3>最近活动</h3><span class="card-meta">实时</span></div><button class="button ghost" data-action="查看全部活动">查看全部</button></header>
+                <div class="activity-list">
+                  <div class="activity-row"><i class="status-dot good"></i><div class="activity-copy"><div class="activity-title"><strong>tester</strong> 已回传验收结果</div><div class="activity-sub">tester → leader · result</div></div><span class="activity-time">16:52:08</span></div>
+                  <div class="activity-row"><i class="status-dot busy"></i><div class="activity-copy"><div class="activity-title"><strong>frontend</strong> 正在处理界面任务</div><div class="activity-sub">lease · 18m remaining</div></div><span class="activity-time">16:51:43</span></div>
+                  <div class="activity-row"><i class="status-dot good"></i><div class="activity-copy"><div class="activity-title"><strong>leader</strong> 已收到结果唤醒</div><div class="activity-sub">native delivery · 23ms</div></div><span class="activity-time">16:52:09</span></div>
+                  <div class="activity-row"><i class="status-dot warn"></i><div class="activity-copy"><div class="activity-title"><strong>tester</strong> 等待验收确认</div><div class="activity-sub">1 unresolved result</div></div><span class="activity-time">16:52:12</span></div>
+                </div>
+              </article>
+            </div>
+
+            <aside class="detail-card">
+              <div class="detail-head">
+                <div class="detail-role"><span class="node-avatar" id="detail-avatar">FE<i class="status-dot busy live" id="detail-dot"></i></span><div><h3 id="detail-name">frontend</h3><p id="detail-address">这一页/frontend</p></div></div>
+                <div class="detail-status"><span><i class="status-dot busy" id="detail-status-dot"></i><b id="detail-status-text">执行中</b></span><span id="detail-age">刚刚更新</span></div>
+              </div>
+              <div class="detail-body">
+                <section class="detail-section"><div class="detail-section-label">会话</div><dl class="definition-list"><dt>聊天</dt><dd id="detail-chat">frontend</dd><dt>传输</dt><dd id="detail-transport">codex_app_tools</dd><dt>模式</dt><dd>desktop_session</dd><dt>会话 ID</dt><dd id="detail-id">01a159c8…</dd></dl></section>
+                <section class="detail-section"><div class="detail-section-label">当前活动</div><dl class="definition-list"><dt>任务</dt><dd id="detail-task">状态窗口视觉实现</dd><dt>队列</dt><dd id="detail-queue">0</dd><dt>连续失败</dt><dd>0</dd><dt>最近投递</dt><dd id="detail-delivery">16:51:43</dd></dl></section>
+                <section class="detail-section"><div class="detail-section-label">职责</div><p class="responsibility" id="detail-responsibility">用户端与运营端前端、交互、自适应、视觉实现和前端自测</p></section>
+              </div>
+              <div class="detail-actions"><button class="button" data-action="唤醒 frontend"><svg class="icon"><use href="#i-bell"/></svg>唤醒</button><button class="button primary" data-action="切换 frontend 会话"><svg class="icon"><use href="#i-switch"/></svg>切换会话</button></div>
+            </aside>
+          </section>
+        </div>
+      </div>
+
+      <div class="view hidden" id="view-tray">
+        <div class="tray-desktop">
+          <div class="tray-caption">
+            <div class="eyebrow">TRAY PANEL</div>
+            <h2>一眼看到会话是否还在工作</h2>
+            <p>托盘不再只是启动和退出菜单，而是压缩后的实时中继台。常用检查不必打开完整状态窗口。</p>
+            <div class="tray-note-list"><div class="tray-note"><span class="index">01</span><span>按项目分组，仅显示状态变化与需要处理的会话</span></div><div class="tray-note"><span class="index">02</span><span>运行、执行、警告三种信号有固定位置，不依赖文字颜色辨认</span></div><div class="tray-note"><span class="index">03</span><span>底部保留启动、打开状态窗口和设置，退出动作收进更多菜单</span></div></div>
+          </div>
+          <section class="tray-popover">
+            <header class="tray-head">
+              <div class="tray-brand-row"><div class="tray-brand"><div class="brand-mark small"><svg><use href="#mark"/></svg></div><div><strong>Agents Chat</strong><small><span class="status-dot good live" style="display:inline-block;margin-right:6px"></span>中枢运行中 · 23ms</small></div></div><button class="icon-button" data-action="打开更多菜单"><svg class="icon"><use href="#i-more"/></svg></button></div>
+              <div class="tray-summary"><div class="tray-metric"><b>10</b><span>在线角色</span></div><div class="tray-metric"><b>1</b><span>执行中</span></div><div class="tray-metric"><b>0</b><span>等待任务</span></div></div>
+              <div class="tray-warning"><svg class="icon"><use href="#i-warning"/></svg><span>2 个 Qoder 原生会话离线</span></div>
+            </header>
+            <div class="tray-projects">
+              <div class="tray-project"><div class="tray-project-title"><span>这一页</span><span>5 / 6 在线</span></div>
+                <button class="tray-session" data-action="查看 frontend"><span class="tray-avatar">FE<i class="status-dot busy live"></i></span><span class="tray-session-copy"><span class="tray-session-name">frontend</span><span class="tray-session-meta">状态窗口视觉实现</span></span><span class="tray-state busy">执行中</span></button>
+                <button class="tray-session" data-action="查看 tester"><span class="tray-avatar">TE<i class="status-dot warn"></i></span><span class="tray-session-copy"><span class="tray-session-name">tester</span><span class="tray-session-meta">1 项结果待确认</span></span><span class="tray-state warn">需确认</span></button>
+                <button class="tray-session" data-action="查看 leader"><span class="tray-avatar">LE<i class="status-dot good"></i></span><span class="tray-session-copy"><span class="tray-session-name">leader</span><span class="tray-session-meta">8 秒前收到唤醒</span></span><span class="tray-state">在线</span></button>
+              </div>
+              <div class="tray-project"><div class="tray-project-title"><span>wengan-cemetery</span><span>2 / 4 在线</span></div>
+                <button class="tray-session" data-action="查看 CMS Tester"><span class="tray-avatar">TE<i class="status-dot good"></i></span><span class="tray-session-copy"><span class="tray-session-name">tester</span><span class="tray-session-meta">CMS_Tester · 15:11</span></span><span class="tray-state">在线</span></button>
+                <button class="tray-session" data-action="查看 CMS Frontend"><span class="tray-avatar">FE<i class="status-dot"></i></span><span class="tray-session-copy"><span class="tray-session-name">frontend</span><span class="tray-session-meta">CMS_Frontend · 会话离线</span></span><span class="tray-state">离线</span></button>
+              </div>
+              <div class="tray-project"><div class="tray-project-title"><span>默认项目</span><span>1 / 3 在线</span></div>
+                <button class="tray-session" data-action="查看默认项目 codex"><span class="tray-avatar">CO<i class="status-dot good"></i></span><span class="tray-session-copy"><span class="tray-session-name">codex</span><span class="tray-session-meta">桌面会话已绑定</span></span><span class="tray-state">在线</span></button>
+              </div>
+            </div>
+            <footer class="tray-footer"><button class="button primary" data-action="打开状态窗口"><svg class="icon"><use href="#i-network"/></svg>打开状态窗口</button><button class="button" data-action="刷新状态"><svg class="icon"><use href="#i-refresh"/></svg></button><button class="button" data-action="打开设置"><svg class="icon"><use href="#i-settings"/></svg></button></footer>
+          </section>
+          <div class="taskbar"><div class="taskbar-tray"><span>⌃</span><svg class="mini-tray-icon"><use href="#mark"/></svg><span>中</span><div class="clock">16:53<br>2026/11/9</div></div></div>
+        </div>
+      </div>
+
+      <div class="view hidden" id="view-icons">
+        <section class="icon-board">
+          <header class="icon-board-header"><div><h2>三节点中继标记</h2><p>中心节点代表本地中枢，三个外部节点代表跨项目、跨角色和跨会话的连接。形状在 16px 托盘尺寸仍能保持清晰轮廓。</p></div><div class="token-note">GRID 4px<br>STROKE 1.5px / 2px<br>RADIUS 20%</div></header>
+          <div class="icon-grid">
+            <article class="icon-panel"><h3>主标记</h3><p>无文字也能表达“多个会话通过一个本地中枢交换任务”</p><div class="mark-showcase"><div class="large-mark-tile"><div class="brand-mark large"><svg><use href="#mark"/></svg></div></div><div class="mark-construction"><svg viewBox="0 0 240 180"><g stroke="#2d353c" stroke-width="1" fill="none"><circle cx="120" cy="90" r="62" stroke-dasharray="3 4"/><line x1="20" y1="90" x2="220" y2="90"/><line x1="120" y1="10" x2="120" y2="170"/></g><svg x="76" y="46" width="88" height="88" color="#63ddd0"><use href="#mark"/></svg><g fill="#6f7b84" font-family="Cascadia Mono" font-size="9"><text x="8" y="20">RELAY CORE</text><text x="170" y="165">3 NODES</text></g></svg><p>三角关系稳定，中心节点清晰；不使用聊天气泡、机器人或火花等通用 AI 符号</p></div></div></article>
+            <article class="icon-panel"><h3>运行状态</h3><p>托盘形状不变，仅状态色变化，避免用户重新识别图标</p><div class="state-row"><div class="state-swatch" style="color:var(--good)"><svg><use href="#mark"/></svg><strong>运行中</strong><small>#63DDD0</small></div><div class="state-swatch" style="color:var(--busy)"><svg><use href="#mark"/></svg><strong>执行中</strong><small>#83B7FF</small></div><div class="state-swatch" style="color:var(--warn)"><svg><use href="#mark"/></svg><strong>需留意</strong><small>#F2BD66</small></div><div class="state-swatch" style="color:var(--offline)"><svg><use href="#mark"/></svg><strong>未运行</strong><small>#69747C</small></div></div></article>
+            <article class="icon-panel"><h3>尺寸系统</h3><p>16px 托盘图标优先，向上扩展至状态窗口和安装包图标</p><div class="size-row"><div class="size-sample"><svg width="16" height="16"><use href="#mark"/></svg><span>16</span></div><div class="size-sample"><svg width="20" height="20"><use href="#mark"/></svg><span>20</span></div><div class="size-sample"><svg width="24" height="24"><use href="#mark"/></svg><span>24</span></div><div class="size-sample"><svg width="32" height="32"><use href="#mark"/></svg><span>32</span></div><div class="size-sample"><svg width="48" height="48"><use href="#mark"/></svg><span>48</span></div><div class="size-sample"><svg width="64" height="64"><use href="#mark"/></svg><span>64</span></div></div></article>
+            <article class="icon-panel"><h3>Windows 托盘预览</h3><p>深色与浅色任务栏均使用有色实心版本，警告状态只改变语义色</p><div class="tray-preview"><div class="mock-taskbar"><span style="color:var(--text-3)">⌃</span><svg class="mini-tray-icon"><use href="#mark"/></svg><span style="color:var(--text-3)">中</span><span class="clock">16:53<br>2026/11/9</span></div><div class="tray-preview-copy">默认：青绿色<br>执行：蓝色<br>警告：琥珀色<br>离线：中性灰</div></div></article>
+          </div>
+        </section>
+      </div>
+
+      <div class="toast" id="toast"><i class="status-dot good"></i><span id="toast-text">原型操作</span></div>
+    </section>
+  </main>
+
+  <script>
+    const views = [...document.querySelectorAll('.view')];
+    const tabs = [...document.querySelectorAll('.view-tab')];
+    tabs.forEach(tab => tab.addEventListener('click', () => {
+      tabs.forEach(item => item.classList.toggle('active', item === tab));
+      views.forEach(view => view.classList.toggle('hidden', view.id !== `view-${tab.dataset.view}`));
+    }));
+
+    const sessions = {
+      leader: { avatar: 'LE', name: 'leader', address: '这一页/leader', state: '在线', stateClass: 'good', age: '8 秒前更新', chat: 'leader', transport: 'codex_app_tools', id: '01a144af…', task: '等待新任务', queue: '0', delivery: '16:52:09', responsibility: '用户第一对接人；需求澄清、范围决策、任务分派、结果验收与统一汇报' },
+      frontend: { avatar: 'FE', name: 'frontend', address: '这一页/frontend', state: '执行中', stateClass: 'busy', age: '刚刚更新', chat: 'frontend', transport: 'codex_app_tools', id: '01a159c8…', task: '状态窗口视觉实现', queue: '0', delivery: '16:51:43', responsibility: '用户端与运营端前端、交互、自适应、视觉实现和前端自测' },
+      backend: { avatar: 'BE', name: 'backend', address: '这一页/backend', state: '在线', stateClass: 'good', age: '2 分钟前更新', chat: 'backend', transport: 'codex_app_tools', id: '01a15222…', task: '等待新任务', queue: '0', delivery: '16:50:11', responsibility: 'API、数据、Agent 与沙箱、审核、权益、支付及后端测试' },
+      tester: { avatar: 'TE', name: 'tester', address: '这一页/tester', state: '待确认', stateClass: 'warn', age: '12 秒前更新', chat: 'tester', transport: 'codex_app_tools', id: '01a1aee2…', task: '结果等待 leader 验收', queue: '1', delivery: '16:52:08', responsibility: '独立验收、生产浏览器实操、回归与证据归档' }
+    };
+    document.querySelectorAll('[data-session]').forEach(node => node.addEventListener('click', () => {
+      document.querySelectorAll('[data-session]').forEach(item => item.classList.toggle('active', item === node));
+      const data = sessions[node.dataset.session];
+      document.getElementById('detail-avatar').childNodes[0].nodeValue = data.avatar;
+      document.getElementById('detail-name').textContent = data.name;
+      document.getElementById('detail-address').textContent = data.address;
+      document.getElementById('detail-status-text').textContent = data.state;
+      document.getElementById('detail-age').textContent = data.age;
+      document.getElementById('detail-chat').textContent = data.chat;
+      document.getElementById('detail-transport').textContent = data.transport;
+      document.getElementById('detail-id').textContent = data.id;
+      document.getElementById('detail-task').textContent = data.task;
+      document.getElementById('detail-queue').textContent = data.queue;
+      document.getElementById('detail-delivery').textContent = data.delivery;
+      document.getElementById('detail-responsibility').textContent = data.responsibility;
+      ['detail-dot','detail-status-dot'].forEach(id => { const dot = document.getElementById(id); dot.className = `status-dot ${data.stateClass}${data.stateClass === 'busy' ? ' live' : ''}`; });
+    }));
+
+    let toastTimer;
+    const toast = document.getElementById('toast');
+    document.querySelectorAll('[data-action]').forEach(control => control.addEventListener('click', () => {
+      document.getElementById('toast-text').textContent = `${control.dataset.action} · 设计原型`;
+      toast.classList.add('show');
+      clearTimeout(toastTimer);
+      toastTimer = setTimeout(() => toast.classList.remove('show'), 1800);
+    }));
+  </script>
+</body>
+</html>

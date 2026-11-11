@@ -20,10 +20,35 @@ sys.path.insert(0, str(ROOT))
 
 from bridge import cli
 from bridge.broker import Broker
+from bridge.codex_connection import normalize_connection
 from bridge.config import adapter_for_transport, read_config, transport_supported
 from bridge.store import Store
 
 FIXTURE = [sys.executable, str(ROOT / "examples" / "fixture_runtime.py")]
+
+
+def seed_codex_registry(state, base):
+    """Give the migration tests a valid, non-running Codex app generation.
+
+    No legacy codex-desktop.local.json is written: that would make the hub try
+    to spawn a real connector. The registry is enough for origin selection.
+    """
+    node = base / "codex-node.exe"
+    server = base / "codex-server.mjs"
+    node.write_text("fixture", encoding="utf-8")
+    server.write_text("fixture", encoding="utf-8")
+    item = normalize_connection({
+        "command": [str(node), str(server)],
+        "pipe": r"\\.\pipe\agents-chat-test",
+        "origin_thread": "management-chat",
+        "updated_at": time.time(),
+    })
+    registry = {"version": 1, "active_connection_id": item["connection_id"],
+                "connections": {"management-chat": item}}
+    state = Path(state)
+    state.mkdir(parents=True, exist_ok=True)
+    (state / "codex-connections.local.json").write_text(
+        json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 class DirectClient:
@@ -131,6 +156,7 @@ class MigrationTests(unittest.TestCase):
         }, ensure_ascii=False, indent=2), encoding="utf-8")
         self.project = project
         self.bus = bus
+        seed_codex_registry(self.state, self.base)
         self.hub = InProcessHub(self.state, self.config_path, self.client)
         self.hub.start()
         self.client.call("desktop_bind", agent="demo.tester", project="demo",
@@ -413,6 +439,7 @@ class CliIntegrationTests(unittest.TestCase):
                 "roles": {"tester": {"address": "demo.tester", "adapter": "dsh",
                                      "description": "", "peers": []}},
             }), encoding="utf-8")
+            seed_codex_registry(state, base)
             start(state, config)
             client = Client(state)
             try:

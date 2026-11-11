@@ -57,6 +57,10 @@ function createRunner(api, callBroker = broker) {
       const state = await api.getState({sessionId: job.session_id});
       if (["queued", "running"].includes(state.phase)) throw new Error("Target desktop chat is busy; task was not sent");
       receipt = await api.send({sessionId: job.session_id, prompt: job.prompt, requestId: "agents-chat-" + job.task_id});
+      if (job.notify) {
+        await finish(job, "succeeded", {summary:"Notification delivered through Qoder native extension.", session_id:receipt.sessionId, turn_id:receipt.turnId, notification:true, run_delivered:true, evidence:"Qoder native send receipt"});
+        return;
+      }
       if (record.cancelled) await record.cancel();
       subscription = await api.getState({sessionId: receipt.sessionId, turnId: receipt.turnId, include: ["output", "interactions"]}, event => {
         if (event.type === "closed") {

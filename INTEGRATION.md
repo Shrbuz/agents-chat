@@ -16,7 +16,7 @@
   --role backend:codex:"API 与数据" --role frontend:qoder:"界面与交互"
 ```
 
-- 角色格式 `role[:adapter[:description]]`；adapter 支持 `codex`、`qoder`、`codebuddy`、`fixture`。
+- 角色格式 `role[:adapter[:description]]`；adapter 支持 `codex`、`qoder`、`opencode`、`workbuddy`、`codebuddy`、`dsh`、`fixture`。
 - 已经有角色默认保留；`--force` 才替换运行时配置。
 - `--no-agents` 不写 `AGENTS.md`；`--no-restart` 不自动重启后台。
 - 项目内生成：
@@ -85,9 +85,37 @@
 | bridge_targets | 项目、角色、会话、模式 |
 | bridge_cancel | 请求取消；不回滚修改 |
 | bridge_register | 注册/刷新本会话为角色会话 |
+| bridge_pull | WorkBuddy 等拉取模式角色领取一条排队任务；不要轮询 |
+| bridge_complete | 幂等完成已领取任务并把结果回给发起角色 |
 | bridge_roles | 项目/角色/会话概览 |
 
 MCP 不主动把消息推入模型上下文，也不支持 server-initiated sampling。任务超过一次 wait 时，用 CLI 长等待或结果回调，不要让模型循环 `bridge_task`。
+
+### WorkBuddy
+
+WorkBuddy 使用同一套 stdio MCP，自动配置命令为：
+
+```powershell
+& $cli --project alpha workbuddy setup --role workbuddy
+& $cli workbuddy status
+```
+
+`setup` 会合并写入 `~/.workbuddy/mcp.json`（不会覆盖其他 MCP server），并在缺少时创建 `adapter=workbuddy`、`mode=mcp_pull` 的角色；Agents Chat 安装器同时把 `agents-chat-desktop` 技能安装到 WorkBuddy。WorkBuddy 新聊天先调用 `bridge_register`，然后调用一次 `bridge_inbox` 和 `bridge_pull`；领取的任务在同一回合通过 `bridge_complete` 幂等回传。它也可用 `bridge_send` 给其他角色派活、用 `bridge_wait` 等结果。
+
+本地自定义 MCP 没有主动把消息推入既有 WorkBuddy 聊天的公开桌面接口；因此外部任务持久化等待 WorkBuddy 聊天领取，不会把仅有 session 记录冒充为“桌面已唤醒”。安装包内的 CodeBuddy sidecar 由 WorkBuddy 守护进程托管，也不冒充独立 CLI。开放平台 Local Assistant Chat 推送是另一条需要应用审核、OAuth 和权限申请的通道。
+
+### OpenCode
+
+OpenCode 使用官方 stdio MCP 与官方 CLI 的原生会话能力：
+
+```powershell
+& $cli --project alpha opencode setup --role reviewer
+& $cli opencode status --root E:\work\alpha
+```
+
+`setup` 在项目的 `opencode.json` 中加入角色专属 MCP server，并创建 `adapter=opencode` 的角色。重启或新开 OpenCode 会话后调用一次 `bridge_register`；不要手填 session ID，OpenCode 会在 MCP `_meta["ai.opencode/sessionID"]` 中附带当前真实会话，Agents Chat 据此自动绑定 `opencode_native`。此后外部任务直接投递到该会话，结果自动回传，不使用 `bridge_pull`。
+
+连接器由 Hub 按角色监督；服务停止、会话不存在、待登录、CLI 缺失分别显示为独立状态。连接器异常退出后，只重启该角色连接器；重领未完成投递前会先检查会话中的稳定任务标记，避免重复创建或执行业务任务。
 
 ## 纯 HTTP
 
@@ -132,8 +160,8 @@ Codex 连接器还需要一次管理聊天准备的 app-tools 上下文（`codex
 旧 `session takeover` 在 adapter 与 transport 不一致时返回 `adapter_transport_mismatch`；`role list` 和托盘会显示 `adapter_transport_mismatch` 告警，直到角色被正确迁移。
 
 - 绑定角色有排队/执行中任务时拒绝改绑。
-- 连接器按角色启动；Codex 每个角色一个进程。Qoder 原生扩展的 `agent` 默认是 `"*"`，会轮询所有 `qoder_native` 绑定，因此同一个 Qoder 应用里的 frontend/backend 两个聊天可以同时被唤醒。旧值（单个角色名）仍然兼容。
-- Qoder 原生扩展必须从 Agents Chat 的“启动 Qoder 原生连接”入口启动；直接开 Qoder 不会加载开发扩展。
+- 连接器按角色启动；Codex 与 OpenCode 每个角色一个受 Hub 监督的进程。Qoder 原生扩展的 `agent` 默认是 `"*"`，会轮询所有 `qoder_native` 绑定，因此同一个 Qoder 应用里的 frontend/backend 两个聊天可以同时被唤醒。旧值（单个角色名）仍然兼容。
+- 安装器会为 Qoder 普通启动启用 `agents-chat.native`；完整退出并重新打开 Qoder 后即可连接，不要求使用 Agents Chat 专用入口。专用入口仅用于修复环境或旧安装，并会重写插件状态目录。
 - 连接器离线时明确报错，不回退 CLI；桌面任务保留原聊天上下文，不承诺 token 更低。
 
 ## 与 agent-chat skill 共存

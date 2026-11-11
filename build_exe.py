@@ -24,12 +24,19 @@ def build(output=None, console=False):
     output = Path(output or ROOT / "AgentsChat.exe").resolve()
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(".new.exe")
-    source = ROOT / "launcher/AgentsChatLauncher.cs"
+    sources = [
+        ROOT / "launcher/AgentsChatLauncher.cs",
+        ROOT / "launcher/AgentsChatVisuals.cs",
+    ]
     command = [
         str(compiler()), "/nologo", "/target:" + ("exe" if console else "winexe"), "/optimize+", "/platform:anycpu",
         "/reference:System.Windows.Forms.dll", "/reference:System.Web.Extensions.dll",
-        "/out:" + str(temporary), str(source),
+        "/out:" + str(temporary),
     ]
+    icon = ROOT / "launcher/AgentsChat.ico"
+    if icon.is_file():
+        command.insert(5, "/win32icon:" + str(icon))
+    command.extend(str(source) for source in sources)
     if console:
         command.insert(3, "/define:CLI")
     result = subprocess.run(command, capture_output=True, text=True, encoding="utf-8", errors="replace")

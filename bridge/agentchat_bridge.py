@@ -14,11 +14,6 @@ from .bus import Bus, parse_time, utc_now
 
 DELIVER = {"request", "result", "blocked", "cancel", "release", "reassign"}
 WAKEUP_SENDER = "agent-chat"
-# A failed delivery is worth retrying, but an offline connector must not grow
-# an unbounded queue of identical wakeups.
-MAX_WAKEUP_ATTEMPTS = 5
-
-
 def _helper_for(project, root):
     configured = (project.get("agent_chat") or {}).get("helper")
     candidates = [Path(configured) if configured else None,
@@ -46,11 +41,12 @@ def _wake_roles(chat, resolved):
 
 
 class AgentChatBridge:
-    def __init__(self, state_dir, config, store, notify):
+    def __init__(self, state_dir, config, store, notify, transport_online=None):
         self.state = Path(state_dir)
         self.config = config
         self.store = store
         self.notify = notify
+        self.transport_online = transport_online
         self.stop = threading.Event()
         self.thread = None
         self.projects = self._prepare()
@@ -126,15 +122,20 @@ class AgentChatBridge:
                 "last_error_at": (error or {}).get("at"),
             })
         fatal = self.project_errors.get("*")
+        wakeups = self.store.wakeup_stats()
+        degraded = degraded or bool(wakeups["needs_attention"])
         return {
             "started": self.thread is not None,
             "thread_alive": alive,
-            "ok": (not self.projects) or (alive and not degraded),
+            "ok": not degraded and ((not self.projects) or alive),
             "degraded": degraded,
             "started_at": self.started_at,
             "last_scan_at": self.last_scan_at,
             "last_error": (fatal or {}).get("error"),
             "wakeups": self.wakeups,
+            "pending_wakeups": wakeups["pending"],
+            "pending_result_wakeups": wakeups["pending_results"],
+            "needs_attention": wakeups["needs_attention"],
             "cursor_resets": self.cursor_resets,
             "last_cursor_reset": self.last_cursor_reset,
             "projects": projects,
@@ -306,6 +307,12 @@ class AgentChatBridge:
                 continue
 
     def _desktop_session_online(self, project, role):
+        if self.transport_online is not None:
+            try:
+                if not self.transport_online(role["address"]):
+                    return False
+            except Exception:
+                return False
         sessions = self.store.list_sessions(project=project["id"], role=role["local_role"])
         return any(item["id"].startswith("desktop:") and item["online"] for item in sessions)
 
@@ -358,14 +365,26 @@ class AgentChatBridge:
         existing = self.store.latest_task_by_key_prefix(WAKEUP_SENDER, base)
         if existing is not None and existing["state"] in ("queued", "running", "succeeded"):
             return existing
-        attempts = self.store.count_tasks_by_key_prefix(WAKEUP_SENDER, base)
-        if attempts >= MAX_WAKEUP_ATTEMPTS:
+        if existing is not None:
+            # Older versions created a new retry task and eventually gave up.
+            # Re-open the latest one instead: one bus event keeps one stable
+            # delivery identity and remains visibly unnotified until recovered.
+            self.store.requeue_wakeup(existing["id"], {
+                "error": (existing.get("result") or {}).get("error") or "wakeup_not_delivered",
+                "summary": "Wakeup is still required and will be retried.",
+                "retryable": True, "needs_attention": True, "unnotified": True,
+            })
+            self.wakeups += 1
+            return self.store.get(existing["id"])
+        if not event.get("message_id") and not event.get("task_id"):
             return existing
-        key = base if existing is None else base + ":retry:" + str(time.time_ns())
+        key = base
         prompt = self._prompt(project, bus_role, role, None, event, action)
         payload = {"prompt": prompt, "timeout": 1800, "delivery_timeout": 30,
-                   "context": [], "reply_mode": "mailbox", "queue_ttl": 3600,
+                   "context": [], "reply_mode": "mailbox", "queue_ttl": 86400,
                    "notify": False, "kind": "agent_chat_wakeup",
+                   "event_type": event.get("type"),
+                   "bus_event_id": event.get("message_id") or event.get("task_id"),
                    "interrupt_on_timeout": False}
         task_id, duplicate = self.store.enqueue(WAKEUP_SENDER, role["address"], key, payload)
         if not duplicate:

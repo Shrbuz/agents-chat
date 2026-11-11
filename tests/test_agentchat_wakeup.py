@@ -118,14 +118,29 @@ class WakeupTests(unittest.TestCase):
         project = self.broker.agent_chat.projects[0]
         self.broker.agent_chat._reconcile_pending(project)
         retry = self.broker.store.latest_task_by_key_prefix("agent-chat", base)
-        self.assertNotEqual(retry["id"], first["id"])
-        self.assertTrue(retry["idem"].startswith(base + ":retry:"))
+        self.assertEqual(retry["id"], first["id"])
+        self.assertEqual(retry["idem"], base)
+        self.assertTrue(retry["result"]["unnotified"])
         self.broker.store.finish(retry["id"], "succeeded",
                                  {"summary": "通知已投递", "run_delivered": True})
         self.broker.agent_chat._reconcile_pending(project)
         again = self.broker.store.latest_task_by_key_prefix("agent-chat", base)
         self.assertEqual(again["id"], retry["id"])
-        self.assertEqual(self.broker.store.count_tasks_by_key_prefix("agent-chat", base), 2)
+        self.assertEqual(self.broker.store.count_tasks_by_key_prefix("agent-chat", base), 1)
+
+    def test_rebind_cancelled_wakeup_is_reopened_for_the_still_pending_event(self):
+        created = submit_request(self.bus_root)
+        self.start_bridge()
+        first = self.wakeup(created)
+        dropped = self.broker.store.cancel_wakeups("demo.backend")
+        self.assertEqual(dropped, [first["id"]])
+        self.assertEqual(self.broker.store.get(first["id"])["state"], "cancelled")
+
+        project = self.broker.agent_chat.projects[0]
+        self.broker.agent_chat._reconcile_pending(project)
+        retry = self.broker.store.get(first["id"])
+        self.assertEqual(retry["state"], "queued")
+        self.assertTrue(retry["result"]["unnotified"])
 
     def test_claim_result_and_verify_each_wake_the_right_role_once(self):
         created = submit_request(self.bus_root)

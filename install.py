@@ -67,6 +67,53 @@ $taskLink.Save()
                    env=environment, check=True, creationflags=subprocess.CREATE_NO_WINDOW)
 
 
+def write_qoder_native_options(plugin, state):
+    """Point the native Qoder plugin at this installation, never the build tree.
+
+    Release archives are assembled in a temporary portable directory.  Keeping
+    an existing ``state`` value here would copy that build-machine path into the
+    per-user install and make a normally launched Qoder report its heartbeat to
+    the wrong hub.
+    """
+    native_bridge = Path(plugin) / "bridge.local.json"
+    try:
+        native_options = json.loads(native_bridge.read_text(encoding="utf-8-sig"))
+    except FileNotFoundError:
+        native_options = {}
+    native_options["state"] = str(Path(state).resolve())
+    native_options["agent"] = "*"
+    native_bridge.write_text(json.dumps(native_options, ensure_ascii=False), encoding="utf-8")
+    return native_bridge
+
+
+def enable_qoder_normal_launch(plugin):
+    """Enable the native plugin for future ordinary Qoder launches on Windows."""
+    import ctypes
+    from ctypes import wintypes
+    import winreg
+
+    values = {
+        "QODER_APP_PLUGIN_ALLOW_UNVERIFIED": "true",
+        "QODER_APP_PLUGIN_DEV_DIRS": str(Path(plugin).resolve()),
+    }
+    with winreg.CreateKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
+        for name, value in values.items():
+            winreg.SetValueEx(key, name, 0, winreg.REG_SZ, value)
+            os.environ[name] = value
+
+    # Explorer and other launchers keep a process-local environment snapshot.
+    # Broadcast the change so a Qoder restart is enough; signing out must not be
+    # required after installation or upgrade.
+    environment = ctypes.create_unicode_buffer("Environment")
+    result = ctypes.c_size_t()
+    send = ctypes.windll.user32.SendMessageTimeoutW
+    send.argtypes = [wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM,
+                     wintypes.UINT, wintypes.UINT, ctypes.POINTER(ctypes.c_size_t)]
+    send.restype = wintypes.LPARAM
+    send(0xFFFF, 0x001A, 0, ctypes.cast(environment, ctypes.c_void_p).value,
+         0x0002, 5000, ctypes.byref(result))
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--destination", type=Path, default=Path(os.environ.get("LOCALAPPDATA", str(ROOT))) / "Programs/AgentsChat")
@@ -115,7 +162,7 @@ def main():
         if (state / "endpoint.json").exists():
             raise SystemExit("旧服务尚未退出，安装已停止。")
     destination.mkdir(parents=True, exist_ok=True)
-    for filename in ["bridge.py", "desktop.py", "desktop_link.py", "qoder_desktop_link.py", "launch_qoder_native.py",
+    for filename in ["bridge.py", "desktop.py", "desktop_link.py", "opencode_desktop_link.py", "qoder_desktop_link.py", "launch_qoder_native.py",
                      "uninstall.py", "login_qoder.py", "README.md", "DESIGN.md", "INTEGRATION.md", "VERIFICATION.md",
                      "HANDOFF.md", "install.ps1", "uninstall.ps1", "LICENSE", "VERSION"]:
         if (ROOT / filename).is_file():
@@ -133,13 +180,12 @@ def main():
     if (ROOT/"connectors/dsh-host").is_dir():
         shutil.copytree(ROOT/"connectors/dsh-host",destination/"connectors/dsh-host",
                         dirs_exist_ok=True, ignore=shutil.ignore_patterns("cordis.patch.yml","__pycache__"))
-    native_bridge = destination/"connectors/qoder-native/bridge.local.json"
-    native_options = json.loads(native_bridge.read_text(encoding="utf-8")) if native_bridge.exists() else {}
-    native_options.setdefault("state", str(destination/".bridge"))
-    native_options.setdefault("agent", "*")
-    native_bridge.write_text(json.dumps(native_options,ensure_ascii=False),encoding="utf-8")
+    native_plugin = destination/"connectors/qoder-native"
+    write_qoder_native_options(native_plugin, destination/".bridge")
+    enable_qoder_normal_launch(native_plugin)
     shutil.copytree(ROOT / "tool-skill",destination / "tool-skill",dirs_exist_ok=True)
-    for skill_root in (Path.home()/".codex/skills", Path.home()/".qoder/skills", Path.home()/".agents/skills"):
+    for skill_root in (Path.home()/".codex/skills", Path.home()/".qoder/skills",
+                       Path.home()/".workbuddy/skills", Path.home()/".agents/skills"):
         skill_path = skill_root / "agents-chat-desktop"
         skill_path.mkdir(parents=True,exist_ok=True)
         shutil.copy2(ROOT / "tool-skill/SKILL.md",skill_path / "SKILL.md")

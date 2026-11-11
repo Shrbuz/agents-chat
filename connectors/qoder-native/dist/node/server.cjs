@@ -60,6 +60,10 @@ function createRunner(api,{state,call,readReport}={}) {
     try {
       receipt=await api.continueSession({sessionId:job.session_id,prompt:resultPrompt(job),requestId:"agents-chat-"+job.task_id});
       if(receipt.sessionId!==job.session_id||!receipt.turnId)throw Error("Native session receipt mismatch");
+      if(job.notify){
+        await call("desktop_finish",{task_id:job.task_id,nonce:job.nonce,state:"succeeded",result:{summary:"Notification delivered through Qoder native continueSession.",session_id:receipt.sessionId,turn_id:receipt.turnId,notification:true,run_delivered:true,evidence:"Qoder native continueSession receipt"}});
+        return;
+      }
       if(controller.signal.aborted)await api.interruptTurn({sessionId:receipt.sessionId,turnId:receipt.turnId});
       let resolveTerminal;
       const terminal=new Promise(resolve=>{resolveTerminal=resolve;});
@@ -81,9 +85,14 @@ function createRunner(api,{state,call,readReport}={}) {
   return {run,async cancel(job){await running.get(job.task_id)?.cancel();},async close(){for(const record of running.values())await record.cancel();}};
 }
 
+function resolveState(pluginRoot,configured) {
+  const value=configured||"../../.bridge";
+  return path.isAbsolute(value)?value:path.resolve(pluginRoot,value);
+}
+
 async function activate(context) {
   const options=JSON.parse(await fs.readFile(path.resolve(__dirname,"../../bridge.local.json"),"utf8"));
-  const state=options.state;
+  const state=resolveState(path.resolve(__dirname,"../.."),options.state);
   // "*" (default) serves every qoder_native role bound in this hub. A concrete
   // value remains supported for older single-role installs.
   const only=options.agent&&options.agent!=="*"?new Set([options.agent]):null;
@@ -118,5 +127,5 @@ async function activate(context) {
   context.subscriptions.push({dispose:async()=>{closed=true;clearInterval(timer);await runner.close();await publish();}});
   void loop.catch(error=>console.error("Agents Chat native loop:",error.message));
 }
-module.exports={activate,createRunner,resultPrompt};
+module.exports={activate,createRunner,resultPrompt,resolveState};
 

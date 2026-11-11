@@ -66,6 +66,12 @@ def execute(client, state, job, cancelled):
         attempted = True
         ui("send", target, str(prompt))
         sent = True
+        if job.get("notify"):
+            client.call("desktop_finish", task_id=job["task_id"], nonce=job["nonce"], state="succeeded",
+                        result={"summary": "通知已实际投递到 Qoder 目标会话。",
+                                "session_id": target, "notification": True,
+                                "run_delivered": True})
+            return
         while not cancelled.wait(1):
             status = client.call("task",task_id=job["task_id"])
             task_state = status["state"]

@@ -101,6 +101,30 @@ class HubTests(unittest.TestCase):
         self.assertEqual(inbox["messages"][0]["from"], "beta.frontend")
         self.assertIn("Fixture process", inbox["messages"][0]["summary"])
 
+    def test_role_status_exposes_work_and_directional_activity(self):
+        sent = self.broker.call("send", {"sender": "alpha.backend", "target": "beta.frontend",
+                                          "prompt": "topology", "key": "topology-1", "timeout": 10})
+        self.broker.call("wait", {"task_id": sent["task_id"], "seconds": 10})
+        projects = self.broker.call("roles", {})["projects"]
+        roles = {role["address"]: role for project in projects for role in project["roles"]}
+        self.assertTrue(roles["alpha.backend"]["last_send_event_id"].startswith("queue:"))
+        self.assertTrue(roles["alpha.backend"]["last_receive_event_id"].startswith("queue:"))
+        self.assertTrue(roles["beta.frontend"]["last_receive_event_id"].startswith("queue:"))
+        self.assertTrue(roles["beta.frontend"]["last_send_event_id"].startswith("queue:"))
+
+        now = "2099-01-01T00:00:00+00:00"
+        self.broker.store.sync_bus("alpha", {"bus-live": {
+            "task_id": "bus-live", "requester": "frontend", "assignee": "backend",
+            "status": "in_progress", "sequence": 99, "updated_at": now,
+            "request": {"title": "live", "priority": "P1"},
+            "claim": {"expires_at": None}, "last_update": {"type": "claim"},
+        }})
+        projects = self.broker.call("roles", {})["projects"]
+        roles = {role["address"]: role for project in projects for role in project["roles"]}
+        self.assertEqual(roles["alpha.backend"]["running_tasks"], 1)
+        self.assertTrue(roles["alpha.backend"]["last_send_event_id"].startswith("bus:"))
+        self.assertTrue(roles["alpha.frontend"]["last_receive_event_id"].startswith("bus:"))
+
     def test_cross_project_reply_mode_run(self):
         sent = self.broker.call("send", {"sender": "alpha.backend", "target": "beta.frontend",
                                          "prompt": "work", "key": "callback-1", "timeout": 10,

@@ -67,6 +67,8 @@ def desktop_title(transport, session_id):
     """Human name for a desktop-bound session, when the client store has one."""
     if transport == "qoder_native":
         return qoder_title(session_id)
+    if transport == "opencode_native" and session_id:
+        return str(session_id)
     if transport == "dsh_plugin" and session_id:
         # DSH keeps the chat title in its session cache; the session id is the
         # fallback when that entry is missing.

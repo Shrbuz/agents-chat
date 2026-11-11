@@ -63,7 +63,9 @@ def make_prompt(task, endpoint):
     # A bus wakeup is a pointer, not a task: the event is already in the role's
     # inbox, so the long envelope below would only duplicate it in tokens.
     if p.get("kind") == "agent_chat_wakeup":
-        return p.get("prompt", "")
+        # The stable marker lets a reconnected connector prove that an
+        # uncertain send already reached the chat before it retries.
+        return f"Agents Chat wakeup {task['id']}.\n" + p.get("prompt", "")
     # No inbox, old conversation, progress events, or receipts enter this prompt.
     context = "\n".join(p.get("context", []))
     project = endpoint.get("project")
@@ -91,8 +93,36 @@ def command_for(endpoint, run_dir):
                         f"skills.max_context_tokens={endpoint.get('skill_catalog_tokens', 512)}", "-c",
                         f"tool_output_token_limit={endpoint.get('tool_output_tokens', 1200)}"]
         command += endpoint.get("args", []) + ["-"]
-    elif adapter in ("qoder", "codebuddy"):
+    elif adapter in ("qoder", "workbuddy", "codebuddy"):
         command += ["-p", "--output-format", "json"] + endpoint.get("args", [])
+    elif adapter == "opencode":
+        # With no positional message, the official CLI reads the bounded prompt
+        # from stdin.  This also avoids exposing task text in the process list.
+        command += ["run", "--format", "json", "--auto"] + endpoint.get("args", [])
+    elif adapter == "opencode":
+        # OpenCode emits newline-delimited JSON.  Text parts are streamed; the
+        # last one is the final assistant output on current official releases.
+        parts = []
+        for line in stdout.splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(event, dict):
+                continue
+            session_id = event.get("sessionID") or event.get("session_id") or session_id
+            if event.get("type") == "error":
+                detail = event.get("error")
+                error = str(detail.get("message") if isinstance(detail, dict) else detail or "runtime_result_error")
+                continue
+            part = event.get("part")
+            text = part.get("text") if isinstance(part, dict) else event.get("text")
+            if isinstance(text, str) and text.strip():
+                parts.append(text)
+        summary = parts[-1] if parts else ""
+        ok = bool(summary) and not error
+        if not ok:
+            error = error or "invalid_runtime_output"
     elif adapter == "dsh":
         # `dsh headless` answers one task and prints the final message; "-"
         # reads the task from stdin like the codex adapter does.
@@ -190,6 +220,10 @@ def run_task(task, endpoint, state_dir, cancelled, stop):
         env["PYTHONIOENCODING"] = "utf-8"
         env["AGENT_BRIDGE_TASK_ID"] = task["id"]
         env["AGENT_BRIDGE_STATE"] = str(Path(state_dir).resolve())
+        if endpoint["adapter"] in ("workbuddy", "codebuddy") and command[0].lower().endswith("workbuddy.exe"):
+            # WorkBuddy ships CodeBuddy CLI inside its Electron bundle.  Its
+            # executable is the supported Node host for that bundled entry.
+            env["ELECTRON_RUN_AS_NODE"] = "1"
         if endpoint["adapter"] == "dsh":
             # The DSH CLI is the app launcher in Node mode; without this the
             # child would boot the desktop app instead of running the task.

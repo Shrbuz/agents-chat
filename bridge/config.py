@@ -28,7 +28,7 @@ ENDPOINT_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 PROJECT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$")
 ROLE_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$")
 SESSION_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
-ADAPTERS = ("codex", "qoder", "codebuddy", "dsh", "fixture")
+ADAPTERS = ("codex", "qoder", "opencode", "workbuddy", "codebuddy", "dsh", "fixture")
 
 # A desktop transport names the client that owns the chat.  Keeping this map in
 # one place is what lets takeover refuse a half migration instead of writing an
@@ -36,20 +36,23 @@ ADAPTERS = ("codex", "qoder", "codebuddy", "dsh", "fixture")
 ADAPTER_TRANSPORTS = {
     "codex": {"codex_app_tools"},
     "qoder": {"qoder_accessibility", "qoder_extension", "qoder_native"},
+    "opencode": {"opencode_native"},
     "dsh": {"dsh_plugin"},
     # The fixture adapter exists for tests and accepts every desktop transport.
     "fixture": {"codex_app_tools", "qoder_accessibility", "qoder_extension",
-                "qoder_native", "dsh_plugin"},
+                "qoder_native", "opencode_native", "dsh_plugin"},
 }
 TRANSPORT_ADAPTERS = {
     "codex_app_tools": "codex",
     "qoder_accessibility": "qoder",
     "qoder_extension": "qoder",
     "qoder_native": "qoder",
+    "opencode_native": "opencode",
     "dsh_plugin": "dsh",
 }
 DEFAULT_TRANSPORTS = {"codex": "codex_app_tools", "qoder": "qoder_native",
-                      "dsh": "dsh_plugin", "fixture": "codex_app_tools"}
+                      "opencode": "opencode_native", "dsh": "dsh_plugin",
+                      "fixture": "codex_app_tools"}
 
 
 def adapter_for_transport(transport):
@@ -144,8 +147,11 @@ def _normalize_endpoint(name, data, project, role, base, root, address):
     adapter = endpoint.get("adapter")
     if adapter not in ADAPTERS:
         raise ConfigError("unknown_adapter: " + name)
-    if endpoint.get("mode", "independent_cli_task") != "independent_cli_task":
-        raise ConfigError("desktop_chat_wakeup_not_supported")
+    mode = endpoint.get("mode", "independent_cli_task")
+    if mode not in ("independent_cli_task", "mcp_pull"):
+        raise ConfigError("unsupported_endpoint_mode")
+    if mode == "mcp_pull" and adapter != "workbuddy":
+        raise ConfigError("mcp_pull_requires_workbuddy_adapter")
     command = endpoint.get("command")
     if not isinstance(command, list) or not command or not all(isinstance(s, str) and s for s in command):
         raise ConfigError("command_must_be_argv_array: " + name)

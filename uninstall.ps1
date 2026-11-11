@@ -158,6 +158,18 @@ if (-not $ownsRegistration) {
     Invoke-Guard "remove the HKCU uninstall registration" {
         Remove-Item "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\AgentsChat" -Recurse -Force -ErrorAction SilentlyContinue
     }
+    if ($installExists) {
+        $plugin = Join-Path $Destination "connectors\qoder-native"
+        $configuredPlugin = [Environment]::GetEnvironmentVariable("QODER_APP_PLUGIN_DEV_DIRS", "User")
+        if (-not [string]::IsNullOrWhiteSpace($configuredPlugin) -and
+            ([System.IO.Path]::GetFullPath($configuredPlugin).TrimEnd('\', '/') -ieq
+             [System.IO.Path]::GetFullPath($plugin).TrimEnd('\', '/'))) {
+            Invoke-Guard "remove the Qoder native connector environment" {
+                [Environment]::SetEnvironmentVariable("QODER_APP_PLUGIN_ALLOW_UNVERIFIED", $null, "User")
+                [Environment]::SetEnvironmentVariable("QODER_APP_PLUGIN_DEV_DIRS", $null, "User")
+            }
+        }
+    }
 }
 
 if (-not $KeepSkill) {
@@ -170,6 +182,7 @@ if (-not $KeepSkill) {
         foreach ($skills in @(
             (Join-Path $env:USERPROFILE ".codex\skills"),
             (Join-Path $env:USERPROFILE ".qoder\skills"),
+            (Join-Path $env:USERPROFILE ".workbuddy\skills"),
             (Join-Path $env:USERPROFILE ".agents\skills"))) {
             # Only the one skill folder this product created, never a parent.
             $target = Join-Path $skills $SkillName

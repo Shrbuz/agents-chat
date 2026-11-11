@@ -90,6 +90,24 @@ class StoreTests(unittest.TestCase):
         self.assertIsNone(self.store.claim("b"))
         self.assertEqual(self.store.recover(), 0)
 
+    def test_activity_snapshot_tracks_work_and_message_events(self):
+        task_id = self.submit()
+        queued = self.store.activity_snapshot()
+        self.assertEqual(queued["active"], [{"target": "b", "state": "queued", "kind": None}])
+        self.assertEqual(queued["events"][0]["state"], "queued")
+        self.assertEqual(queued["events"][0]["sender"], "a")
+
+        self.store.claim("b")
+        running = self.store.activity_snapshot()
+        self.assertEqual(running["active"], [{"target": "b", "state": "running", "kind": None}])
+        self.assertEqual(running["events"][0]["state"], "running")
+
+        self.store.finish(task_id, "succeeded", {"summary": "done"})
+        completed = self.store.activity_snapshot()
+        self.assertEqual(completed["active"], [])
+        self.assertEqual(completed["events"][0]["state"], "succeeded")
+        self.assertIsNotNone(completed["events"][0]["started"])
+
 
 class IntegrationTests(unittest.TestCase):
     @classmethod
@@ -210,7 +228,7 @@ class IntegrationTests(unittest.TestCase):
                               capture_output=True, text=True, encoding="utf-8", timeout=10)
         responses = [json.loads(line) for line in proc.stdout.splitlines()]
         self.assertEqual(len(responses), 3)
-        self.assertEqual(len(responses[1]["result"]["tools"]), 9)
+        self.assertEqual(len(responses[1]["result"]["tools"]), 11)
         task_id = json.loads(responses[2]["result"]["content"][0]["text"])["task_id"]
         self.assertEqual(self.client.wait(task_id, 10)["state"], "succeeded")
 

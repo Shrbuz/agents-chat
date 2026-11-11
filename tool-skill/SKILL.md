@@ -1,11 +1,11 @@
 ---
 name: agents-chat-desktop
-description: 在本机用 Agents Chat 中枢做多项目、多角色、多会话协作：让同一或不同 Agent 的多个聊天互相派发任务、自动回传结果并验收。用户提到 Agents Chat、多会话/多角色协作、让 Codex/Qoder/DSH 分工、把任务交给另一个聊天、或项目需要角色化分工时使用。
+description: 在本机用 Agents Chat 中枢做多项目、多角色、多会话协作：让同一或不同 Agent 的多个聊天互相派发任务、自动回传结果并验收。用户提到 Agents Chat、多会话/多角色协作、让 Codex/Qoder/WorkBuddy/DSH 分工、把任务交给另一个聊天、或项目需要角色化分工时使用。
 ---
 
 # Agents Chat 多角色协作
 
-Agents Chat 在本机后台常驻，统一管理多个项目。每个项目有若干角色，地址是 `<项目>.<角色>`；一个角色是一个协作席位，可以由 Codex、Qoder、DSH 或同一个 Agent 的另一个会话承担。任务派给角色，结果自动回到发起方。
+Agents Chat 在本机后台常驻，统一管理多个项目。每个项目有若干角色，地址是 `<项目>.<角色>`；一个角色是一个协作席位，可以由 Codex、Qoder、WorkBuddy、DSH 或同一个 Agent 的另一个会话承担。任务派给角色，结果自动回到发起方。
 
 ## 启动服务：用到就自己拉起
 
@@ -97,9 +97,29 @@ Agents Chat 在本机后台常驻，统一管理多个项目。每个项目有�
 & $cli --project <项目> join --role <角色>
 ```
 
-Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线。识别不到时用 `--session <聊天ID>` 显式指定。绑定后任务投递到这个聊天，结果仍回发起角色。
+Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线，安装后普通启动 Qoder 即会加载，不要求从 Agents Chat 专用入口启动。识别不到时用 `--session <聊天ID>` 显式指定。绑定后任务投递到这个聊天，结果仍回发起角色。
 
 `join` 只负责“同一个客户端内绑定会话”。如果角色的 `adapter` 属于另一个客户端（例如 `dsh` 角色要在 Codex 里承担），`join` 会拒绝并返回 `adapter_transport_mismatch`——那是**接管**，不是绑定，必须走下一节的 `migrate-and-takeover`。
+
+### WorkBuddy 会话
+
+WorkBuddy 通过本地 MCP 接入，不使用 `join` 或输入框自动化。首次接入由任一终端执行：
+
+```powershell
+& $cli --project <项目> workbuddy setup --role workbuddy
+```
+
+命令会保留已有的 `~/.workbuddy/mcp.json` 内容，加入 Agents Chat MCP，并创建 `adapter=workbuddy` 的角色（若尚不存在）。重启或新开 WorkBuddy 聊天后，先调用 `bridge_register`、`bridge_inbox`，再调用一次 `bridge_pull`；若领到任务，就在当前回合完成并用 `bridge_complete` 回传。派活使用 `bridge_send`，等待结果使用 `bridge_wait`。WorkBuddy 当前没有可供本地自定义 MCP 主动推送到既有聊天的公开桌面传输，因此任务会留在 `mcp_pull` 队列等待聊天领取，不冒充“已唤醒桌面聊天”，也不要循环轮询。
+
+### OpenCode 会话
+
+OpenCode 支持原生会话投递，不使用 `mcp_pull`。首次接入由终端执行：
+
+```powershell
+& $cli --project <项目> opencode setup --role <角色>
+```
+
+重启或新开 OpenCode 会话后调用一次 `bridge_register`，不要自行生成或复制 session ID；OpenCode 会在 MCP 元数据中附带当前真实 session，Hub 自动绑定 `opencode_native`。随后调用 `bridge_inbox`，日常派活用 `bridge_send`。若 `opencode status` 或托盘显示服务不可用、会话失效、待登录或 CLI 缺失，先修复对应状态；不要把仅有 session 记录当成在线，也不要改用 `bridge_pull`。
 
 ## 总线模式下的完整流程
 
@@ -169,7 +189,7 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
     --session <当前会话ID> --transport codex_app_tools --adapter auto
 ```
 
-- transport 必须来自当前客户端：Codex = `codex_app_tools`，Qoder = `qoder_native`，DSH = `dsh_plugin`；`--adapter auto` 会据此推出 `codex` / `qoder` / `dsh`。
+- transport 必须来自当前客户端：Codex = `codex_app_tools`，Qoder = `qoder_native`，OpenCode = `opencode_native`，DSH = `dsh_plugin`；`--adapter auto` 会据此推出 `codex` / `qoder` / `opencode` / `dsh`。
 - 任一步失败都会回滚配置、项目入口、绑定和旧会话；命令以非零退出，**不要**在同一个角色上补跑旧的 `session takeover`。
 - 成功返回 `adapter_changed`、`hub_restarted`、`active_session`、`retired_sessions`、`postconditions`。
 - 只换同客户端会话时 `adapter_changed=false`、`hub_restarted=false`，这是正确行为。
@@ -182,7 +202,7 @@ Codex 从 `CODEX_THREAD_ID` 识别当前聊天；Qoder 需要原生扩展在线�
 1. `postconditions.ok == true`；
 2. `postconditions.role_adapter` **等于当前客户端适配器**，且 `role list` 里该角色的 `adapter` 与它一致；
 3. `postconditions.session_adapter == postconditions.role_adapter`；
-4. `postconditions.transport` 与适配器匹配（`codex_app_tools↔codex`、`qoder_native↔qoder`、`dsh_plugin↔dsh`）；
+4. `postconditions.transport` 与适配器匹配（`codex_app_tools↔codex`、`qoder_native↔qoder`、`opencode_native↔opencode`、`dsh_plugin↔dsh`）；
 5. `postconditions.active_session == <当前会话ID>`；
 6. `postconditions.checks.single_active_session == true` 且 `checks.old_sessions_retired == true`，`retired_sessions` 覆盖旧会话。
 

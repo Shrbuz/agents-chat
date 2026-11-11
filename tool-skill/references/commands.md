@@ -86,8 +86,8 @@ AgentsChat.Cli.exe --project PROJECT session migrate-and-takeover --role ROLE \
   --session NEW_CHAT --transport codex_app_tools --adapter auto
 ```
 
-- `--transport` 只能是当前客户端的传输：`codex_app_tools` / `qoder_native` / `dsh_plugin`；
-  `--adapter auto` 按 transport 推导 `codex` / `qoder` / `dsh`。
+- `--transport` 只能是当前客户端的传输：`codex_app_tools` / `qoder_native` / `opencode_native` / `dsh_plugin`；
+  `--adapter auto` 按 transport 推导 `codex` / `qoder` / `opencode` / `dsh`。
 - 迁移依次完成：主配置 → `.agents-chat/project.json` → 重启中枢 → 绑定新会话 →
   退休旧会话 → 写 `_state/active-sessions.json`；任一步失败会回滚。
 - 成功输出含 `adapter_changed`、`hub_restarted`、`active_session`、`retired_sessions`、

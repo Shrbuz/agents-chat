@@ -1,7 +1,11 @@
 const assert=require('node:assert/strict');
-const {createRunner}=require('../connectors/qoder-native/dist/node/server.cjs');
+const path=require('node:path');
+const {createRunner,resolveState}=require('../connectors/qoder-native/dist/node/server.cjs');
 const job={task_id:'task-1',nonce:'receipt-1',session_id:'existing-chat',prompt:'Read-only native verification'};
 (async()=>{
+  const pluginRoot=path.join(process.cwd(),'dist','AgentsChat-Portable','connectors','qoder-native');
+  assert.equal(resolveState(pluginRoot,'../../data'),path.resolve(process.cwd(),'dist','AgentsChat-Portable','data'));
+  assert.equal(resolveState(pluginRoot,path.resolve(process.cwd(),'hub-state')),path.resolve(process.cwd(),'hub-state'));
   const calls=[],results=[];
   const api={
     send(){throw Error('Privileged API must not be used');},

@@ -55,6 +55,9 @@ def discover_command(adapter):
         for bundle in candidates:
             if node and bundle.is_file():
                 return [node, str(bundle)]
+    if adapter == "opencode":
+        from .opencode import discover_opencode_command
+        return discover_opencode_command()
     if adapter == "dsh":
         # `dsh` is a cmd wrapper around the Electron launcher; the config layer
         # rejects shell wrappers, so resolve the native executable and its entry
@@ -71,10 +74,9 @@ def discover_command(adapter):
                     return [str(exe), "--expose-internals", str(entry)]
             else:
                 return [str(wrapper)]
-    if adapter == "codebuddy":
-        found = shutil.which("codebuddy") or shutil.which("codebuddy.exe")
-        if found:
-            return [found]
+    if adapter in ("workbuddy", "codebuddy"):
+        from .workbuddy import discover_workbuddy_command
+        return discover_workbuddy_command()
     raise config_module.ConfigError("runtime_not_found: install the official " + adapter + " CLI or pass --command")
 
 
@@ -90,6 +92,13 @@ def endpoint_for(adapter, cwd, description="", peers=None, command=None, sandbox
                               "--allowed-tools", "Read", "--strict-mcp-config",
                               "--no-session-persistence", "--max-output-tokens", "1000",
                               "--max-model-request-retries", "0"])
+    elif adapter == "opencode":
+        endpoint.update(args=[])
+    elif adapter == "workbuddy":
+        # A custom WorkBuddy MCP cannot inject a new user message into an
+        # existing chat. Keep tasks durable for the chat to pull instead of
+        # pretending its bundled, daemon-only sidecar is a standalone CLI.
+        endpoint.update(args=[], mode="mcp_pull")
     elif adapter == "codebuddy":
         endpoint.update(args=[])
     return endpoint

@@ -4,13 +4,13 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.6.11-blue)
+![Version](https://img.shields.io/badge/version-0.7.0-blue)
 
 让同一台机器上的多个 Agent 聊天互相派活、自动回传结果并验收。项目里的角色（`leader`、`frontend`、`tester`……）各自是一个协作席位，任务按角色路由，不需要人工在两个聊天窗口之间复制粘贴。
 
 - **本地优先**：中枢只监听 `127.0.0.1`，数据存在本地 SQLite 与 JSON 文件里
 - **按需启动**：不设开机自启；用到它的会话自己拉起后台
-- **看得见**：任务可以投进你正在用的 Qoder / DSH 聊天，过程和结果都在你眼前
+- **看得见**：任务可以投进你正在用的 Codex / Qoder / OpenCode / DSH 聊天；WorkBuddy 通过本地 MCP 参与收发
 
 ---
 
@@ -52,7 +52,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/S
 安装器会：
 
 - 下载自包含便携包并安装到 `%LOCALAPPDATA%\Programs\AgentsChat`；
-- 把 `agents-chat-desktop` 技能写进 Codex / Qoder / DSH 的用户级技能目录；
+- 把 `agents-chat-desktop` 技能写进 Codex / Qoder / WorkBuddy / DSH 的用户级技能目录；
 - 创建开始菜单与桌面入口；
 - 校验 Release 的 SHA-256，保留已有的 `config.json` 与数据；
 - 不需要管理员权限，不需要预装 Python、pip、Node（Codex / Qoder 自身仍需你安装）。
@@ -176,7 +176,7 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
     --session <当前会话ID> --transport codex_app_tools --adapter auto
 ```
 
-- `--adapter auto` 按 transport 推导：`codex_app_tools→codex`、`qoder_native→qoder`、`dsh_plugin→dsh`。
+- `--adapter auto` 按 transport 推导：`codex_app_tools→codex`、`qoder_native→qoder`、`opencode_native→opencode`、`dsh_plugin→dsh`。
 - 迁移依次完成：主配置 → `.agents-chat/project.json` → 重启中枢 → 绑定新会话 → 退休旧会话 → 更新 `active-sessions`；任一步失败会回滚。
 - 返回 `adapter_changed`、`hub_restarted`、`active_session`、`retired_sessions`、`postconditions`。
 - 旧 `session takeover` 在 adapter/transport 不一致时返回 `adapter_transport_mismatch`，不会再留下半迁移状态。
@@ -225,9 +225,13 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 默认角色是可独立运行的 CLI 任务。若要把已有桌面聊天作为投递目标：
 
 - **Codex**：宿主 app-tools MCP，`role bind --transport codex_app_tools`；一个角色一个连接器。
-- **Qoder**：原生开发扩展 `agents-chat.native`，`role bind --transport qoder_native`；不操作输入框、不切聊天、不抢焦点。
+- **Qoder**：原生开发扩展 `agents-chat.native`，`role bind --transport qoder_native`；安装后普通启动 Qoder 即会加载，不操作输入框、不切聊天、不抢焦点。
+- **OpenCode**：官方 MCP 提供当前真实 session ID，`opencode_native` 连接器用官方 CLI 把任务投进这个会话；无需 OAuth、审核或手工 pull。
+- **WorkBuddy**：本地 stdio MCP 拉取模式；运行 `workbuddy setup --project <项目>` 后，新聊天可领取任务、回传结果并给其他角色派活。
 - **DSH**：由宿主插件自动绑定，不需要 `join`。
 - 绑定是显式路由；绑定角色有排队/执行中任务时拒绝改绑，不会静默退回 CLI。
+
+WorkBuddy 的本地自定义 MCP 目前没有主动向既有聊天推送用户消息的公开接口，所以不会伪装成桌面唤醒：其他角色派给 WorkBuddy 角色的任务会持久化为 `mcp_pull` 队列；WorkBuddy 聊天通过 `bridge_pull` 领取、完成后用 `bridge_complete` 幂等回传。若要使用 WorkBuddy 开放平台的 Local Assistant Chat 主动推送，需要另行申请应用、OAuth 与对应权限。
 
 ---
 
@@ -243,6 +247,8 @@ register / heartbeat / join / native-result
 send / wait / task / cancel / inbox / ack
 bus request|claim|renew|progress|blocked|result|verify|cancel|release|reassign|inbox|mark-read|status|show|validate|repair|paths
 mcp --agent ROLE [--project ID]
+workbuddy setup|status
+opencode setup|status
 ```
 
 所有命令支持 `--config`、`--state` 与 `--project`；在项目目录内可以省略，由 `.agents-chat/project.json` 自动解析。
@@ -251,7 +257,7 @@ mcp --agent ROLE [--project ID]
 
 ## MCP
 
-stdio MCP 暴露 9 个工具：`bridge_send`、`bridge_wait`、`bridge_task`、`bridge_inbox`、`bridge_ack`、`bridge_targets`、`bridge_cancel`、`bridge_register`、`bridge_roles`。配置方式见 [INTEGRATION.md](INTEGRATION.md)。
+stdio MCP 暴露任务收发、查询、注册以及拉取执行工具。OpenCode 从每次 MCP 调用的宿主元数据绑定真实 session；WorkBuddy 使用 `bridge_pull` / `bridge_complete`。完整列表与配置方式见 [INTEGRATION.md](INTEGRATION.md)。
 
 ---
 

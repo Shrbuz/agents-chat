@@ -9,68 +9,151 @@ import threading
 import time
 
 from bridge.client import Client
-from bridge.desktop_transport import CodexDesktop
+from bridge.codex_connection import (capture_current_connection,
+                                     discover_connection as discover_live_connection,
+                                     select_connection, update_connection)
+from bridge.desktop_transport import (CodexDesktop, RECOVERABLE_CODEX_ERRORS,
+                                      classify_codex_error)
 
 ROOT = Path(__file__).resolve().parent
 
 
 def discover_connection():
-    pipe = os.environ.get("CODEX_APP_TOOLS_PIPE_PATH")
-    origin = os.environ.get("CODEX_THREAD_ID")
-    node = os.environ.get("CODEX_MCP_NODE_PATH")
-    if not pipe or not origin or not node:
-        raise RuntimeError("请在 Codex 桌面聊天中执行一次连接命令，以获取宿主提供的连接上下文。")
-    plugins = Path.home() / ".codex/plugins/cache/openai-bundled/codex-app-tools"
-    candidates = sorted(plugins.glob("*/server.mjs"), key=lambda p: p.stat().st_mtime, reverse=True)
-    if not candidates:
-        raise RuntimeError("找不到本机 Codex app-tools MCP。")
-    return {"command": [node, str(candidates[0])], "pipe": pipe, "origin_thread": origin}
+    try:
+        return discover_live_connection()
+    except RuntimeError:
+        raise RuntimeError("请在 Codex 桌面聊天中执行一次连接命令，以获取宿主提供的连接上下文。") from None
 
 
-def run_connector(state, connection, agent="codex"):
+def _report(client, agent, state, connection=None, *, error=None, delivered=False,
+            failure_kind=None):
+    try:
+        return client.call(
+            "transport_report", agent=agent, transport="codex_app_tools", state=state,
+            connection_id=(connection or {}).get("connection_id"), error=str(error)[:500] if error else None,
+            delivered=delivered, failure_kind=failure_kind)
+    except RuntimeError:
+        return None
+
+
+def _probe(connection):
+    desktop = CodexDesktop(connection)
+    try:
+        desktop.call("list_threads", {"limit": 1}, timeout=15)
+    finally:
+        desktop.close()
+
+
+def run_connector(state, agent="codex"):
     from bridge.broker import SingleInstance
     lock = SingleInstance(state / (agent.replace(".", "-") + "-desktop.lock"))
     client = Client(state)
     offline_since = None
+    connection = None
+    connector_epoch = None
+    next_probe = 0
     try:
         while True:
+            if (state / "connectors.stop").exists():
+                return
             try:
                 target = next((t for t in client.call("targets") if t["name"] == agent and t["mode"] == "desktop_session"), None)
                 offline_since = None
                 if not target:
                     return
-                job = client.call("desktop_receive", agent=agent, session_id=target["session_id"], seconds=40)
+                selected = select_connection(state, target["session_id"])
+                if selected is None:
+                    _report(client, agent, "offline", error="connection_context_missing",
+                            failure_kind="connection_context_missing")
+                    time.sleep(3)
+                    continue
+                if (connection is None or selected["connection_id"] != connection.get("connection_id")
+                        or time.monotonic() >= next_probe):
+                    connection = selected
+                    try:
+                        _probe(connection)
+                    except Exception as exc:
+                        kind = classify_codex_error(exc, connection)
+                        state_name = kind if kind in ("pipe_missing", "runtime_missing",
+                                                     "app_tools_server_missing") else "degraded"
+                        report = _report(client, agent, state_name, connection, error=exc,
+                                         failure_kind=kind)
+                        if report:
+                            connector_epoch = report.get("connector_epoch", connector_epoch)
+                        next_probe = time.monotonic() + 3
+                        time.sleep(3)
+                        continue
+                    report = _report(client, agent, "ready", connection)
+                    if report:
+                        connector_epoch = report.get("connector_epoch", connector_epoch)
+                    next_probe = time.monotonic() + 40
+                job = client.call("desktop_receive", agent=agent, session_id=target["session_id"],
+                                  transport="codex_app_tools", connector_epoch=connector_epoch,
+                                  seconds=40)
                 if job:
+                    if job.get("action") == "refresh":
+                        connector_epoch = job.get("connector_epoch")
+                        connection = None
+                        next_probe = 0
+                        continue
                     execute(client, connection, job, agent)
             except (RuntimeError, OSError):
                 # No models are called on a broken connection; do not redeliver uncertain work.
+                if (state / "connectors.stop").exists():
+                    return
                 if not (state / "endpoint.json").exists():
-                    offline_since = offline_since or time.monotonic()
-                    if time.monotonic()-offline_since > 15:
-                        return
+                    return
                 time.sleep(3)
     finally:
         lock.close()
+
+
+def _contains_delivery(snapshot, task_id):
+    marker = "Agents Chat wakeup " + task_id + "."
+    for turn in snapshot.get("turns", []):
+        if marker in json.dumps(turn, ensure_ascii=False):
+            return True
+    return False
 
 
 def execute(client, connection, job, agent="codex"):
     if job["action"] != "run":
         return
     desktop = None
+    phase = "preflight"
+    sent = False
     try:
         desktop = CodexDesktop(connection)
         target = job["session_id"]
         # The external app-tools pipe supports read_thread; wait_threads requires executor integration.
-        snapshot = desktop.call("read_thread", {"threadId":target,"hostId":"local","turnLimit":1,"maxOutputCharsPerItem":2000})
+        snapshot = desktop.call("read_thread", {"threadId":target,"hostId":"local","turnLimit":10,"maxOutputCharsPerItem":4000})
+        if job.get("notify") and _contains_delivery(snapshot, job["task_id"]):
+            client.call("desktop_finish", task_id=job["task_id"], nonce=job["nonce"], state="succeeded",
+                        result={"summary": "通知此前已投递；重连后按幂等标记确认，未重复发送。",
+                                "session_id": target, "notification": True,
+                                "run_delivered": True, "deduplicated": True})
+            _report(client, agent, "ready", connection, delivered=True)
+            return
         turns = snapshot.get("turns",[])
         baseline_turn = turns[0]["id"] if turns else None
         if turns and turns[0].get("status") not in ("completed","failed","interrupted"):
             raise RuntimeError("desktop_chat_busy: task was not sent")
+        phase = "send"
         delivery = desktop.call("send_message_to_thread", {"threadId": target, "hostId": "local", "prompt": job["prompt"]})
+        sent = True
+        phase = "sent"
         receipt_path = client.state_dir / "runs" / job["task_id"] / "desktop-delivery.json"
         receipt_path.parent.mkdir(parents=True,exist_ok=True)
         receipt_path.write_text(json.dumps(delivery,ensure_ascii=False,indent=2),encoding="utf-8")
+        if job.get("notify"):
+            client.call("desktop_finish", task_id=job["task_id"], nonce=job["nonce"], state="succeeded",
+                        result={"summary": "通知已实际投递到 Codex 目标会话。",
+                                "session_id": target, "notification": True,
+                                "run_delivered": True})
+            _report(client, agent, "ready", connection, delivered=True)
+            return
         expected_turn = None
+        phase = "wait"
         while True:
             control = client.call("desktop_receive", agent=agent, session_id=target, seconds=0)
             if control and control["action"] == "cancel":
@@ -87,12 +170,24 @@ def execute(client, connection, job, agent="codex"):
                 state, summary = completion
                 client.call("desktop_finish", task_id=job["task_id"], nonce=job["nonce"], state=state,
                     result={"summary": summary[:800], "session_id": target, "evidence": "Codex desktop completed the pinned inter-chat delivery turn"})
+                _report(client, agent, "ready", connection, delivered=True)
                 return
             time.sleep(2)  # Local code reads compact status; no model request or history injection.
     except Exception as exc:
+        kind = classify_codex_error(exc, connection)
+        retryable = kind in RECOVERABLE_CODEX_ERRORS
+        uncertain = phase == "send"
+        report_state = ("busy" if kind == "desktop_chat_busy" else
+                        kind if kind in ("pipe_missing", "runtime_missing", "app_tools_server_missing")
+                        else "degraded")
+        _report(client, agent, report_state, connection, error=exc,
+                failure_kind=None if kind == "desktop_chat_busy" else kind)
         try:
             client.call("desktop_finish", task_id=job["task_id"], nonce=job["nonce"], state="failed",
-                result={"summary": str(exc)[:800], "error": "codex_desktop_transport", "delivery_uncertain": True})
+                result={"summary": str(exc)[:800], "error": kind,
+                        "retryable": retryable, "needs_attention": bool(job.get("notify")),
+                        "unnotified": bool(job.get("notify")),
+                        "run_delivered": sent, "delivery_uncertain": uncertain})
         except RuntimeError:
             pass
     finally:
@@ -162,13 +257,17 @@ def main():
     state = args.state.resolve()
     connection_path = state / "codex-desktop.local.json"
     if args.serve:
-        run_connector(state, json.loads(connection_path.read_text(encoding="utf-8")), args.agent)
+        run_connector(state, args.agent)
         return
     if args.prepare:
-        connection_path.write_text(json.dumps(discover_connection(), ensure_ascii=False, indent=2), encoding="utf-8")
+        update_connection(state, discover_connection())
         print(json.dumps({"prepared": True}))
         return
-    connection = json.loads(connection_path.read_text(encoding="utf-8")) if connection_path.exists() else discover_connection()
+    capture_current_connection(state)
+    connection = select_connection(state, args.thread)
+    if connection is None:
+        connection = discover_connection()
+        update_connection(state, connection)
     desktop = CodexDesktop(connection)
     try:
         inventory = desktop.call("list_threads", {"limit": 50})
@@ -193,7 +292,7 @@ def main():
         if snapshot.get("thread",{}).get("id")!=target:
             raise RuntimeError("无法确认目标聊天，尚未修改路由。")
         Client(state).call("desktop_bind", agent=args.agent, session_id=target, transport="codex_app_tools")
-        connection_path.write_text(json.dumps(connection, ensure_ascii=False, indent=2), encoding="utf-8")
+        update_connection(state, connection)
         with (state / (args.agent.replace(".", "-") + "-desktop.log")).open("ab") as log:
             subprocess.Popen([sys.executable, str(ROOT / "desktop_link.py"), "--state", str(state), "--serve", "--agent", args.agent],
                 stdin=subprocess.DEVNULL, stdout=log, stderr=log,

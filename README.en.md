@@ -4,13 +4,13 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.6.11-blue)
+![Version](https://img.shields.io/badge/version-0.7.0-blue)
 
 Let several agent chats on one machine hand work to each other, return results automatically, and verify them. A role in a project (`leader`, `frontend`, `tester`, …) is a collaboration seat; tasks are routed by role, so nobody has to copy text between two chat windows.
 
 - **Local first**: the hub listens on `127.0.0.1` only; data lives in a local SQLite database and JSON files
 - **Started on demand**: no login autostart; whichever session needs it starts the hub
-- **Visible**: tasks can be delivered into the Qoder / DSH chat you already have open
+- **Visible**: tasks can be delivered into an open Codex / Qoder / OpenCode / DSH chat; WorkBuddy participates through local MCP
 
 ---
 
@@ -52,7 +52,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://github.com/S
 The installer:
 
 - downloads the self-contained portable archive into `%LOCALAPPDATA%\Programs\AgentsChat`;
-- installs the `agents-chat-desktop` skill into the user skill directories of Codex / Qoder / DSH;
+- installs the `agents-chat-desktop` skill into the user skill directories of Codex / Qoder / WorkBuddy / DSH;
 - creates Start Menu and desktop entries;
 - verifies the SHA-256 of the release and keeps your existing `config.json` and data;
 - needs no administrator rights and no preinstalled Python, pip or Node (Codex / Qoder themselves are still yours to install).
@@ -176,7 +176,7 @@ Different client (for example a DSH tester taken over by Codex) must use the ato
     --session <current-session-id> --transport codex_app_tools --adapter auto
 ```
 
-- `--adapter auto` derives the target: `codex_app_tools→codex`, `qoder_native→qoder`, `dsh_plugin→dsh`.
+- `--adapter auto` derives the target: `codex_app_tools→codex`, `qoder_native→qoder`, `opencode_native→opencode`, `dsh_plugin→dsh`.
 - The migration updates the main config, `.agents-chat/project.json`, restarts the hub, binds the new session, retires the old sessions and rewrites `active-sessions`; any failure rolls back.
 - It returns `adapter_changed`, `hub_restarted`, `active_session`, `retired_sessions` and `postconditions`.
 - The old `session takeover` returns `adapter_transport_mismatch` instead of leaving a half-migrated role.
@@ -225,9 +225,13 @@ The old mode spawned a `dsh headless` process per task: it ran outside your chat
 Roles run as independent CLI tasks by default. To deliver into an existing desktop chat:
 
 - **Codex**: host app-tools MCP, `role bind --transport codex_app_tools`; one connector per role.
-- **Qoder**: native extension `agents-chat.native`, `role bind --transport qoder_native`; it does not type into the composer, switch chats or steal focus.
+- **Qoder**: native extension `agents-chat.native`, `role bind --transport qoder_native`; after installation a normal Qoder launch loads it, and it does not type into the composer, switch chats or steal focus.
+- **OpenCode**: the official MCP host supplies the real current session ID and the `opencode_native` connector uses the official CLI to deliver into that exact session; no OAuth, app review or manual pull is required.
+- **WorkBuddy**: local stdio MCP pull mode; run `workbuddy setup --project <project>` and new chats can claim work, return results and dispatch to peers.
 - **DSH**: bound automatically by the host plugin; `join` is not needed.
 - A binding is explicit routing: rebinding is refused while the role has queued or running work, and it never silently falls back to the CLI.
+
+WorkBuddy's local custom MCP currently has no public desktop transport for proactively inserting a user message into an existing chat. Agents Chat therefore does not pretend that the chat was awakened: peer tasks remain durable in an `mcp_pull` queue; a WorkBuddy chat claims them with `bridge_pull` and returns each result idempotently with `bridge_complete`. Proactive Local Assistant Chat push through the WorkBuddy Open Platform separately requires an approved app, OAuth and the corresponding scopes.
 
 ---
 
@@ -243,6 +247,8 @@ register / heartbeat / join / native-result
 send / wait / task / cancel / inbox / ack
 bus request|claim|renew|progress|blocked|result|verify|cancel|release|reassign|inbox|mark-read|status|show|validate|repair|paths
 mcp --agent ROLE [--project ID]
+workbuddy setup|status
+opencode setup|status
 ```
 
 Every command accepts `--config`, `--state` and `--project`; inside a project directory they can be omitted and are resolved from `.agents-chat/project.json`.
@@ -251,7 +257,7 @@ Every command accepts `--config`, `--state` and `--project`; inside a project di
 
 ## MCP
 
-The stdio MCP exposes nine tools: `bridge_send`, `bridge_wait`, `bridge_task`, `bridge_inbox`, `bridge_ack`, `bridge_targets`, `bridge_cancel`, `bridge_register`, `bridge_roles`. See [INTEGRATION.md](INTEGRATION.md) for wiring.
+The stdio MCP exposes task send/wait/query, inbox, registration and pull-execution tools. OpenCode binds the real host session from MCP metadata; WorkBuddy uses `bridge_pull` / `bridge_complete`. See [INTEGRATION.md](INTEGRATION.md) for the full list and wiring.
 
 ---
 

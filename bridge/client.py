@@ -5,6 +5,7 @@ import urllib.request
 from pathlib import Path
 from urllib.parse import urlparse
 
+from .codex_connection import connection_from_environment
 from .store import TERMINAL, compact
 
 
@@ -13,6 +14,14 @@ class Client:
         self.state_dir = Path(state_dir).resolve()
 
     def call(self, method, **params):
+        # Session lifecycle calls originate inside the actual desktop client.
+        # Attach that process's ephemeral pipe/runtime observation so the hub can
+        # refresh Codex connectors without restarting unrelated transports.
+        if method in ("health", "status", "session_register", "session_heartbeat",
+                      "desktop_bind", "session_takeover", "transport_refresh"):
+            connection = connection_from_environment()
+            if connection is not None:
+                params.setdefault("connection_context", connection)
         try:
             endpoint = json.loads((self.state_dir / "endpoint.json").read_text(encoding="utf-8"))
         except (OSError, ValueError):

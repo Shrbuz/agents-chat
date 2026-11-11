@@ -140,7 +140,7 @@ def main():
                     native_ready=native.get("ready") and time.time()*1000-native.get("updated_at",0)<15000
                     previous=next((t for t in Client(ROOT/".bridge").call("targets") if t["name"]=="qoder"),{})
                     if previous.get("desktop_transport")=="qoder_native" and not native_ready:
-                        raise RuntimeError("Qoder 原生扩展未在线，请从原生连接入口重新启动 Qoder。")
+                        raise RuntimeError("Qoder 原生扩展未在线，请完整退出并重新启动 Qoder；仍离线时再使用下方修复入口。")
                     process = subprocess.run([sys.executable,str(ROOT / "desktop_link.py"),"--thread",choices[index]["id"]],capture_output=True,text=True,encoding="utf-8",creationflags=subprocess.CREATE_NO_WINDOW)
                     if process.returncode: raise RuntimeError(process.stderr[-1000:])
                     Client(ROOT / ".bridge").call("desktop_bind",agent="qoder",session_id=qoder["session_id"],transport="qoder_native" if native_ready else "qoder_accessibility")
@@ -170,12 +170,12 @@ def main():
         def work():
             process=subprocess.run(command,capture_output=True,text=True,encoding="utf-8",creationflags=subprocess.CREATE_NO_WINDOW)
             if process.returncode:
-                text="请先在 Qoder 中正常退出应用，再点击此入口启动原生连接。\n"+process.stderr.strip()[-300:]
+                text="请先在 Qoder 中正常退出应用，再点击此入口修复并启动原生连接。\n"+process.stderr.strip()[-300:]
             else:
                 text="Qoder 原生连接已启动；加载完成后可刷新状态。"
             window.after(0,lambda:status.set(text))
         threading.Thread(target=work,daemon=True).start()
-    tk.Button(window,text="启动 Qoder 原生连接",command=launch_native,width=22).pack(pady=5)
+    tk.Button(window,text="修复 Qoder 原生连接",command=launch_native,width=22).pack(pady=5)
     startup = tk.BooleanVar(value=startup_path().exists())
 
     def toggle():

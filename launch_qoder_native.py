@@ -18,7 +18,9 @@ def main():
     parser.add_argument("--app",type=Path)
     parser.add_argument("--check",action="store_true")
     args=parser.parse_args()
-    state=ROOT/".bridge"
+    from bridge.paths import default_config, resolve_state
+    config=default_config()
+    state=resolve_state(None,config) if config else ROOT/".bridge"
     if args.check:
         try:
             status=json.loads((state/"qoder-native-status.json").read_text(encoding="utf-8"))

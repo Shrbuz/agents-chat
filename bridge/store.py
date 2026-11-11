@@ -26,6 +26,8 @@ class Store:
                     idem TEXT NOT NULL, fingerprint TEXT NOT NULL, payload TEXT NOT NULL,
                     state TEXT NOT NULL, created REAL NOT NULL, started REAL, ended REAL,
                     result TEXT, cancel_requested INTEGER NOT NULL DEFAULT 0,
+                    available_at REAL NOT NULL DEFAULT 0,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
                     UNIQUE(sender, idem));
                 CREATE INDEX IF NOT EXISTS ready ON tasks(target, state, created);
                 CREATE TABLE IF NOT EXISTS messages (
@@ -58,6 +60,11 @@ class Store:
             columns = {row[1] for row in db.execute("PRAGMA table_info(sessions)")}
             if "retired" not in columns:
                 db.execute("ALTER TABLE sessions ADD COLUMN retired INTEGER NOT NULL DEFAULT 0")
+            task_columns = {row[1] for row in db.execute("PRAGMA table_info(tasks)")}
+            if "available_at" not in task_columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN available_at REAL NOT NULL DEFAULT 0")
+            if "attempt_count" not in task_columns:
+                db.execute("ALTER TABLE tasks ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0")
 
     @contextmanager
     def db(self, write=False):
@@ -133,13 +140,43 @@ class Store:
 
     def claim(self, target):
         with self.db(True) as db:
-            row = db.execute("SELECT * FROM tasks WHERE target=? AND state='queued' ORDER BY created,id LIMIT 1", (target,)).fetchone()
+            row = db.execute("SELECT * FROM tasks WHERE target=? AND state='queued'"
+                             " AND available_at<=? ORDER BY created,id LIMIT 1",
+                             (target, time.time())).fetchone()
             if not row:
                 return None
             now = time.time()
             db.execute("UPDATE tasks SET state='running',started=? WHERE id=?", (now, row["id"]))
             db.execute("INSERT INTO events(task_id,state,at) VALUES(?,?,?)", (row["id"], "running", now))
             return self.decode(db.execute("SELECT * FROM tasks WHERE id=?", (row["id"],)).fetchone())
+
+    def requeue_wakeup(self, task_id, result, delay=0):
+        """Retry one advisory delivery without creating a second business event.
+
+        The task id and idempotency key stay stable.  This is essential after an
+        uncertain pipe disconnect: the connector can inspect the target thread
+        for the same marker before deciding whether it must send again.
+        """
+        with self.db(True) as db:
+            task = self.decode(db.execute("SELECT * FROM tasks WHERE id=?", (task_id,)).fetchone())
+            if task["payload"].get("kind") != "agent_chat_wakeup":
+                raise ValueError("only_wakeups_are_retryable")
+            # Rebinding a role cancels advisory wakeups for the old route.  If
+            # the underlying bus event is still open, reconciliation must be
+            # able to reopen that same stable delivery identity for the new
+            # route.  A delivered wakeup remains terminal.
+            if task["state"] == "succeeded":
+                return False
+            value = dict(result or {})
+            value.setdefault("needs_attention", True)
+            value.setdefault("unnotified", True)
+            value["retry_at"] = time.time() + max(0, float(delay))
+            db.execute("UPDATE tasks SET state='queued',started=NULL,ended=NULL,result=?,"
+                       "available_at=?,attempt_count=attempt_count+1 WHERE id=?",
+                       (compact(value), value["retry_at"], task_id))
+            db.execute("INSERT INTO events(task_id,state,at) VALUES(?,?,?)",
+                       (task_id, "retrying", time.time()))
+            return True
 
     def has_pending(self, target):
         with self.db() as db:
@@ -176,11 +213,17 @@ class Store:
 
     def recover(self):
         with self.db() as db:
-            ids = [r[0] for r in db.execute("SELECT id FROM tasks WHERE state='running'")]
-        for task_id in ids:
-            self.finish(task_id, "interrupted", {"error": "broker_restarted",
-                        "summary": "Execution outcome unknown after broker restart. Inspect artifacts before submitting a new task."})
-        return len(ids)
+            rows = [(r[0], json.loads(r[1])) for r in
+                    db.execute("SELECT id,payload FROM tasks WHERE state='running'")]
+        for task_id, payload in rows:
+            if payload.get("kind") == "agent_chat_wakeup":
+                self.requeue_wakeup(task_id, {
+                    "error": "broker_restarted", "retryable": True,
+                    "summary": "Wakeup delivery was interrupted; it will be checked and retried."}, 1)
+            else:
+                self.finish(task_id, "interrupted", {"error": "broker_restarted",
+                            "summary": "Execution outcome unknown after broker restart. Inspect artifacts before submitting a new task."})
+        return len(rows)
 
     def cancel(self, task_id):
         with self.db(True) as db:
@@ -421,6 +464,33 @@ class Store:
                              "error": result.get("error") or result.get("summary") or "unknown"})
         return failures
 
+    def wakeup_stats(self, target=None):
+        query = "SELECT target,state,payload,result FROM tasks"
+        values = []
+        if target is not None:
+            query += " WHERE target=?"
+            values.append(target)
+        with self.db() as db:
+            rows = db.execute(query, values).fetchall()
+        pending = attention = pending_results = 0
+        for row in rows:
+            try:
+                payload = json.loads(row["payload"] or "{}")
+                result = json.loads(row["result"] or "{}")
+            except ValueError:
+                continue
+            if payload.get("kind") != "agent_chat_wakeup":
+                continue
+            active = row["state"] in ("queued", "running")
+            if active:
+                pending += 1
+                if payload.get("event_type") == "result":
+                    pending_results += 1
+            if active and result.get("needs_attention"):
+                attention += 1
+        return {"pending": pending, "needs_attention": attention,
+                "pending_results": pending_results}
+
     def list_sessions(self, project=None, role=None, include_offline=True):
         query = "SELECT * FROM sessions"
         clauses, values = [], []
@@ -461,6 +531,33 @@ class Store:
             counts = dict(db.execute("SELECT state,count(*) FROM tasks GROUP BY state").fetchall())
             counts["sessions"] = db.execute("SELECT count(*) FROM sessions").fetchone()[0]
             return counts
+
+    def activity_snapshot(self, event_limit=240):
+        """Return the small live projection needed by the desktop topology.
+
+        Queue tasks describe traffic through the broker while ``bus_tasks``
+        describes longer-lived work on the file bus.  Keeping this read model
+        here avoids teaching the Windows UI how to inspect SQLite or replay bus
+        files itself.
+        """
+        limit = max(1, min(int(event_limit), 1000))
+        with self.db() as db:
+            active = []
+            for row in db.execute(
+                    "SELECT target,state,payload FROM tasks WHERE state IN ('queued','running')"):
+                try:
+                    kind = json.loads(row["payload"] or "{}").get("kind")
+                except ValueError:
+                    kind = None
+                active.append({"target": row["target"], "state": row["state"], "kind": kind})
+            events = [dict(row) for row in db.execute(
+                "SELECT e.seq,e.task_id,e.state,e.at,t.sender,t.target,t.started "
+                "FROM events e JOIN tasks t ON t.id=e.task_id "
+                "ORDER BY e.seq DESC LIMIT ?", (limit,))]
+            bus_tasks = [dict(row) for row in db.execute(
+                "SELECT project,task_id,requester,assignee,status,sequence,updated_at,last_type "
+                "FROM bus_tasks ORDER BY sequence DESC LIMIT ?", (limit,))]
+        return {"active": active, "events": events, "bus_tasks": bus_tasks}
 
     # -- file-bus projection ---------------------------------------------------
     # The shared bus files stay authoritative. These rows are a disposable

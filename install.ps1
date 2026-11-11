@@ -6,7 +6,7 @@
 .DESCRIPTION
   Downloads the latest self-contained Windows portable release, installs it
   under %LOCALAPPDATA%\Programs\AgentsChat, installs the user-level
-  agents-chat-desktop skill for Codex/Qoder/DSH, creates shortcuts and starts
+  agents-chat-desktop skill for Codex/Qoder/WorkBuddy/DSH, creates shortcuts and starts
   the tray host. No Python, Node, pip or administrator rights are required.
 
 .EXAMPLE
@@ -38,6 +38,26 @@ $SkillName = "agents-chat-desktop"
 if ($Repo -notmatch "/" -and $env:AGENTS_CHAT_REPO) { $Repo = $env:AGENTS_CHAT_REPO }
 
 function Step([string]$Message) { Write-Host ("==> " + $Message) -ForegroundColor Cyan }
+
+function Publish-EnvironmentChange {
+    if (-not ("AgentsChat.EnvironmentBroadcast" -as [type])) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+namespace AgentsChat {
+    public static class EnvironmentBroadcast {
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr SendMessageTimeout(
+            IntPtr hWnd, uint message, UIntPtr wParam, string lParam,
+            uint flags, uint timeout, out UIntPtr result);
+    }
+}
+"@
+    }
+    [UIntPtr]$result = [UIntPtr]::Zero
+    [void][AgentsChat.EnvironmentBroadcast]::SendMessageTimeout(
+        [IntPtr]0xffff, 0x001a, [UIntPtr]::Zero, "Environment", 0x0002, 5000, [ref]$result)
+}
 function Fail([string]$Message) { throw ("Agents Chat install failed: " + $Message) }
 
 # Guard every path this script is allowed to delete or overwrite.
@@ -177,6 +197,7 @@ function Install-Skill([string]$Root) {
     $roots = @(
         (Join-Path $env:USERPROFILE ".codex\skills"),
         (Join-Path $env:USERPROFILE ".qoder\skills"),
+        (Join-Path $env:USERPROFILE ".workbuddy\skills"),
         (Join-Path $env:USERPROFILE ".agents\skills")
     )
     foreach ($skills in $roots) {
@@ -206,7 +227,7 @@ function Install-Skill([string]$Root) {
             } | ConvertTo-Json -Compress | Set-Content -Path $runtimePath -Encoding utf8
         }
     }
-    Write-Host ("    skill installed for Codex/Qoder/DSH (agents-chat-desktop)")
+    Write-Host ("    skill installed for Codex/Qoder/WorkBuddy/DSH (agents-chat-desktop)")
     if ($interpreter) {
         Write-Host ("    standalone helper interpreter: " + $interpreter.source)
     } else {
@@ -265,24 +286,37 @@ function Install-QoderShortcuts([string]$Root, [string]$Qoder) {
     # need a special shortcut.
     $plugin = Join-Path $Root "connectors\qoder-native"
     if (Test-Path $plugin) {
+        # Portable archives contain a relocatable placeholder.  Always rewrite
+        # it to this installation so a normally launched Qoder reports to the
+        # installed Hub instead of the machine/path that built the archive.
+        $nativeOptions = @{ state = (Join-Path $Root ".bridge"); agent = "*" } | ConvertTo-Json -Compress
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText((Join-Path $plugin "bridge.local.json"), $nativeOptions, $utf8NoBom)
         [Environment]::SetEnvironmentVariable("QODER_APP_PLUGIN_ALLOW_UNVERIFIED", "true", "User")
         [Environment]::SetEnvironmentVariable("QODER_APP_PLUGIN_DEV_DIRS", $plugin, "User")
+        Publish-EnvironmentChange
         Write-Host "    Qoder connector enabled for normal launches (restart Qoder once)"
     }
     $settings = @{ app = $Qoder } | ConvertTo-Json -Compress
     Set-Content -Path (Join-Path $Root "qoder-native-launch.local.json") -Value $settings -Encoding utf8
     $exe = Join-Path $Root "AgentsChat.exe"
+    $menu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Agents Chat"
+    New-Item -ItemType Directory -Force -Path $menu | Out-Null
+    $shell = New-Object -ComObject WScript.Shell
+    $link = $shell.CreateShortcut((Join-Path $menu "修复 Qoder 原生连接.lnk"))
+    $link.TargetPath = $exe
+    $link.Arguments = "qoder"
+    $link.WorkingDirectory = $Root
+    $link.IconLocation = $Qoder + ",0"
+    $link.Description = "Repair the Agents Chat native connector and start Qoder"
+    $link.Save()
+    # Remove exact legacy product shortcuts; normal Qoder launch is now the
+    # primary path and the remaining entry is labelled as repair-only.
     $desktop = [Environment]::GetFolderPath("Desktop")
-    $menu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
-    foreach ($path in @((Join-Path $desktop "Qoder (Agents Chat).lnk"), (Join-Path $menu "Qoder (Agents Chat).lnk"))) {
-        $shell = New-Object -ComObject WScript.Shell
-        $link = $shell.CreateShortcut($path)
-        $link.TargetPath = $exe
-        $link.Arguments = "qoder"
-        $link.WorkingDirectory = $Root
-        $link.IconLocation = $Qoder + ",0"
-        $link.Description = "Start Qoder with the Agents Chat native connector"
-        $link.Save()
+    $programs = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
+    foreach ($legacy in @((Join-Path $desktop "Qoder (Agents Chat).lnk"),
+                           (Join-Path $programs "Qoder (Agents Chat).lnk"))) {
+        Remove-Item $legacy -Force -ErrorAction SilentlyContinue
     }
     return $true
 }

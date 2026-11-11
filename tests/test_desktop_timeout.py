@@ -84,11 +84,15 @@ class DesktopTimeoutTests(unittest.TestCase):
         self.assertTrue(result["result"]["cancel_requested"])
         self.assertTrue(result["result"]["cancel_acknowledged"])
 
-    def test_notification_finishes_on_delivery_without_waiting_or_cancelling(self):
+    def test_notification_finishes_only_after_connector_confirms_real_delivery(self):
         task = self.send(kind="agent_chat_wakeup", timeout=1)
         job = self.broker.call("desktop_receive", {"agent": "qoder", "session_id": "chat-1", "seconds": 5})
         self.assertEqual(job["task_id"], task["task_id"])
         self.assertTrue(job["notify"])
+        acknowledged = self.broker.call("desktop_finish", {
+            "task_id": task["task_id"], "nonce": job["nonce"], "state": "succeeded",
+            "result": {"summary": "通知已写入目标聊天", "notification": True}})
+        self.assertTrue(acknowledged["accepted"])
         result = self.broker.call("wait", {"task_id": task["task_id"], "seconds": 5})
         self.assertEqual(result["state"], "succeeded")
         self.assertTrue(result["result"]["run_delivered"])
@@ -99,8 +103,8 @@ class DesktopTimeoutTests(unittest.TestCase):
         late = self.broker.call("desktop_finish", {
             "task_id": task["task_id"], "nonce": job["nonce"], "state": "succeeded",
             "result": {"summary": "处理完毕"}})
-        self.assertTrue(late["accepted"])
-        self.assertTrue(late["late"])
+        self.assertFalse(late["accepted"])
+        self.assertTrue(late["task_closed"])
 
     def test_delivery_timeout_is_reported_separately_from_execution(self):
         task = self.send(timeout=30, delivery_timeout=1)
@@ -211,6 +215,8 @@ class DesktopHubDispatchTests(unittest.TestCase):
         thread.start()
         job = self.hub.receive("qoder", "chat-1", 2)
         self.assertIsNotNone(job)
+        self.hub.finish(job["task_id"], job["nonce"], "succeeded",
+                        {"summary": "actually delivered", "notification": True})
         thread.join(3)
         state, value = result["value"]
         self.assertEqual(state, "succeeded")

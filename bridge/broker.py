@@ -5,8 +5,10 @@ import os
 import re
 import sys
 import secrets
+import subprocess
 import threading
 import time
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -16,6 +18,7 @@ from . import titles
 from .store import Store, TERMINAL, compact
 from .desktop_transport import DesktopHub
 from .agentchat_bridge import AgentChatBridge
+from .codex_connection import select_connection, update_connection
 from .config import (ConfigError, adapter_for_transport, allowed_target, find_role, label,
                      normalize_config, projects_summary, read_config, session_id as config_session_id,
                      transport_supported)
@@ -54,6 +57,7 @@ class Broker:
     def __init__(self, state_dir, config):
         self.state_dir = Path(state_dir).resolve()
         self.state_dir.mkdir(parents=True, exist_ok=True)
+        (self.state_dir / "connectors.stop").unlink(missing_ok=True)
         self.lock = SingleInstance(self.state_dir / "broker.lock")
         if "config_path" not in config:
             # Internal callers and tests may pass an already flat legacy mapping.
@@ -65,11 +69,15 @@ class Broker:
         self.cv = threading.Condition()
         self.stop = threading.Event()
         self.workers = []
+        self.connector_processes = {}
+        self.connector_lock = threading.Lock()
         self.busy_cwds = set()
         self.recovered = self.store.recover()
         self.shutdown_callback = None
         self.desktop = DesktopHub(self.state_dir)
-        self.agent_chat = AgentChatBridge(self.state_dir, config, self.store, self.notify_all)
+        self.agent_chat = AgentChatBridge(
+            self.state_dir, config, self.store, self.notify_all,
+            transport_online=lambda agent: self.role_transport_health(agent).get("online", False))
         self.store.purge_stale_sessions()
         # A persisted desktop binding is a real session even before its connector
         # sends the first heartbeat.
@@ -118,11 +126,12 @@ class Broker:
         for project_id in self.config.get("projects", {}):
             self.write_active_sessions(project_id)
         for name, endpoint in self.endpoints.items():
-            if endpoint.get("enabled", True):
+            if endpoint.get("enabled", True) and endpoint.get("mode") != "mcp_pull":
                 worker = threading.Thread(target=self.worker, args=(name,), name="adapter-" + name, daemon=True)
                 worker.start()
                 self.workers.append(worker)
         self.agent_chat.start()
+        self._ensure_desktop_connectors()
 
     def notify_all(self):
         with self.cv:
@@ -130,12 +139,26 @@ class Broker:
 
     def close(self, release_lock=True):
         self.stop.set()
+        try:
+            (self.state_dir / "connectors.stop").write_text("stop\n", encoding="ascii")
+        except OSError:
+            pass
         self.agent_chat.close()
         self.desktop.close()
         with self.cv:
             self.cv.notify_all()
         for worker in self.workers:
             worker.join(timeout=20)
+        for process in list(self.connector_processes.values()):
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=5)
         if release_lock:
             self.lock.close()
 
@@ -153,11 +176,13 @@ class Broker:
                 if cwd_key not in self.busy_cwds:
                     task = self.store.claim(name)
                 if task is None:
-                    self.cv.wait()  # No timer and no model call when the queue is empty.
+                    self.cv.wait(timeout=1)  # Also wakes delayed transport retries; no model call.
                     continue
                 self.busy_cwds.add(cwd_key)
             try:
-                if task["created"] + task["payload"].get("queue_ttl", 3600) < time.time():
+                wakeup = task["payload"].get("kind") == "agent_chat_wakeup"
+                if (not wakeup and
+                        task["created"] + task["payload"].get("queue_ttl", 3600) < time.time()):
                     state, result = "timed_out", {"error": "queue_deadline", "summary": "Expired before runtime launch."}
                 elif self.desktop_input_disabled(name):
                     state, result = "failed", {"error":"qoder_desktop_input_disabled", "summary":"Qoder input automation is disabled; this queued task was not delivered."}
@@ -190,9 +215,28 @@ class Broker:
                         (run_dir / "result.json").write_text(compact({"state": state, **result}), encoding="utf-8")
                     else:
                         state, result = run_task(task, endpoint, self.state_dir, self.store.cancelled, self.stop)
-                self.store.finish(task["id"], state, result)
+                if wakeup and state != "succeeded" and (
+                        result.get("retryable") or result.get("error") in (
+                            "desktop_delivery_timeout", "desktop_chat_busy", "pipe_missing",
+                            "runtime_missing", "app_tools_server_missing",
+                            "desktop_bridge_disconnected", "connection_context_missing",
+                            "opencode_service_unavailable", "opencode_session_missing",
+                            "opencode_transport")):
+                    attempts = int(task.get("attempt_count") or 0)
+                    delay = 5 if result.get("error") == "desktop_chat_busy" else min(30, 2 ** min(attempts, 5))
+                    self.store.requeue_wakeup(task["id"], {
+                        **result, "needs_attention": True, "unnotified": True,
+                        "summary": result.get("summary") or "Wakeup was not delivered; retry is pending.",
+                    }, delay)
+                else:
+                    self.store.finish(task["id"], state, result)
             except Exception as exc:
-                self.store.finish(task["id"], "failed", {"error": "adapter_exception", "summary": str(exc)[:500]})
+                if task["payload"].get("kind") == "agent_chat_wakeup":
+                    self.store.requeue_wakeup(task["id"], {
+                        "error": "adapter_exception", "summary": str(exc)[:500],
+                        "retryable": True, "needs_attention": True, "unnotified": True}, 3)
+                else:
+                    self.store.finish(task["id"], "failed", {"error": "adapter_exception", "summary": str(exc)[:500]})
             finally:
                 with self.cv:
                     self.busy_cwds.discard(cwd_key)
@@ -216,7 +260,9 @@ class Broker:
             return "independent_cli_task"
         if self.desktop_input_disabled(internal):
             return "desktop_mailbox"
-        return "desktop_session" if internal in self.desktop.bindings else "independent_cli_task"
+        if internal in self.desktop.bindings:
+            return "desktop_session"
+        return self.endpoints[internal].get("mode", "independent_cli_task")
 
     def active_sessions(self, project=None):
         """role -> bound desktop session id, per project."""
@@ -301,33 +347,293 @@ class Broker:
         return (binding.get("transport") == "qoder_accessibility"
                 and not self.endpoints.get(agent, {}).get("desktop_input_enabled", True))
 
+    def _ensure_codex_connectors(self):
+        """Start missing Codex role connectors without touching the hub or Qoder."""
+        script = Path(__file__).resolve().parent.parent / "desktop_link.py"
+        if not script.is_file() or not (self.state_dir / "endpoint.json").is_file():
+            return
+        with self.connector_lock:
+            for agent, binding in list(self.desktop.bindings.items()):
+                endpoint = self.endpoints.get(agent) or {}
+                if (binding.get("transport") != "codex_app_tools"
+                        or endpoint.get("adapter") not in ("codex", "fixture")):
+                    continue
+                if select_connection(self.state_dir, binding.get("session_id")) is None:
+                    continue
+                current = self.connector_processes.get(agent)
+                if current is not None and current.poll() is None:
+                    continue
+                self.connector_processes.pop(agent, None)
+                safe = agent.replace(".", "-")
+                try:
+                    probe = SingleInstance(self.state_dir / (safe + "-desktop.lock"))
+                except RuntimeError:
+                    continue
+                probe.close()
+                log_path = self.state_dir / (safe + "-desktop.log")
+                with log_path.open("ab") as log:
+                    process = subprocess.Popen(
+                        [sys.executable, str(script), "--state", str(self.state_dir),
+                         "--serve", "--agent", agent],
+                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0)
+                self.connector_processes[agent] = process
+                threading.Thread(target=process.wait, daemon=True).start()
+
+    def _ensure_opencode_connectors(self):
+        """Start one exact-session OpenCode connector per bound role."""
+        script = Path(__file__).resolve().parent.parent / "opencode_desktop_link.py"
+        if not script.is_file() or not (self.state_dir / "endpoint.json").is_file():
+            return
+        with self.connector_lock:
+            for agent, binding in list(self.desktop.bindings.items()):
+                endpoint = self.endpoints.get(agent) or {}
+                if (binding.get("transport") != "opencode_native"
+                        or endpoint.get("adapter") not in ("opencode", "fixture")):
+                    continue
+                current = self.connector_processes.get(agent)
+                if current is not None and current.poll() is None:
+                    continue
+                self.connector_processes.pop(agent, None)
+                safe = agent.replace(".", "-")
+                try:
+                    probe = SingleInstance(self.state_dir / (safe + "-desktop.lock"))
+                except RuntimeError:
+                    continue
+                probe.close()
+                log_path = self.state_dir / (safe + "-opencode.log")
+                with log_path.open("ab") as log:
+                    process = subprocess.Popen(
+                        [sys.executable, str(script), "--state", str(self.state_dir),
+                         "--agent", agent],
+                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0)
+                self.connector_processes[agent] = process
+                threading.Thread(target=process.wait, daemon=True).start()
+
+    def _ensure_desktop_connectors(self):
+        self._ensure_codex_connectors()
+        self._ensure_opencode_connectors()
+
+    def _refresh_codex_context(self, params, force=False):
+        context = params.get("connection_context")
+        if not isinstance(context, dict):
+            return None
+        try:
+            updated = update_connection(self.state_dir, context)
+        except (OSError, ValueError) as exc:
+            epoch = self.desktop.refresh_transport("codex_app_tools")
+            for agent, binding in list(self.desktop.bindings.items()):
+                if binding.get("transport") != "codex_app_tools":
+                    continue
+                kind = "runtime_missing" if "runtime" in str(exc).lower() else "offline"
+                self.desktop.report_transport(
+                    agent, "codex_app_tools", kind, error=str(exc), failure_kind=kind)
+            return {"updated": False, "epoch": epoch, "error": str(exc)[:300]}
+        epoch = self.desktop.connector_epoch("codex_app_tools")
+        connection_id = updated["connection"]["connection_id"]
+        status_mismatch = any(
+            binding.get("transport") == "codex_app_tools"
+            and (self.desktop.transport_status.get(agent) or {}).get("connection_id") != connection_id
+            for agent, binding in self.desktop.bindings.items())
+        if force or updated["generation_changed"] or status_mismatch:
+            epoch = self.desktop.refresh_transport(
+                "codex_app_tools", connection_id)
+        self._ensure_codex_connectors()
+        return {"updated": True, "generation_changed": updated["generation_changed"],
+                "connection_id": connection_id, "epoch": epoch}
+
+    def role_transport_health(self, internal):
+        binding = self.desktop.bindings.get(internal) or {}
+        transport = binding.get("transport")
+        if transport in ("codex_app_tools", "opencode_native"):
+            return self.desktop.connection_status(internal)
+        if not transport:
+            return {"state": "unbound", "transport": None, "online": False}
+        endpoint = self.endpoints.get(internal) or {}
+        session_id = binding.get("session_id")
+        sessions = self.store.list_sessions(project=endpoint.get("project"), role=endpoint.get("role"))
+        row = next((item for item in sessions if item.get("id") in (
+            session_id, "desktop:" + str(session_id))), None)
+        online = bool(row and row.get("online"))
+        last_seen = row.get("last_seen") if row else None
+        if transport == "qoder_native":
+            try:
+                native = json.loads((self.state_dir / "qoder-native-status.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                native = {}
+            native_seen = float(native.get("updated_at") or 0) / 1000
+            online = bool(native.get("ready") and time.time() - native_seen < 15)
+            last_seen = native_seen or last_seen
+        return {"state": "ready" if online else "offline", "transport": transport,
+                "online": online, "updated_at": last_seen,
+                "failure_kind": None if online else "connector_heartbeat_stale"}
+
+    def passive_transport_health(self, transport):
+        roles = []
+        for internal, binding in self.desktop.bindings.items():
+            if binding.get("transport") != transport:
+                continue
+            item = self.role_transport_health(internal)
+            wakeups = self.store.wakeup_stats(internal)
+            item.update({"agent": internal, "session_id": binding.get("session_id"),
+                         "pending_wakeups": wakeups["pending"],
+                         "needs_attention": wakeups["needs_attention"],
+                         "pending_result_wakeups": wakeups["pending_results"]})
+            roles.append(item)
+        degraded = any(not item.get("online") for item in roles)
+        return {"ok": not degraded, "degraded": degraded, "transport": transport,
+                "state": "degraded" if degraded else ("ready" if roles else "unused"),
+                "roles": roles, "consecutive_failures": 0,
+                "last_success_at": max((float(item.get("updated_at") or 0) for item in roles), default=0) or None,
+                "pending_result_wakeups": sum(item["pending_result_wakeups"] for item in roles),
+                "needs_attention": sum(item["needs_attention"] for item in roles)}
+
     def public_sessions(self, project=None, role=None, include_offline=True):
         rows = self.store.list_sessions(project=project, role=role, include_offline=include_offline)
-        return [{key: row[key] for key in ("id", "project", "role", "adapter", "transport", "status",
-                                            "online", "description", "created", "last_seen", "metadata", "retired")}
-                for row in rows]
+        result = []
+        for row in rows:
+            item = {key: row[key] for key in ("id", "project", "role", "adapter", "transport", "status",
+                                               "online", "description", "created", "last_seen", "metadata", "retired")}
+            if row["id"].startswith("desktop:"):
+                internal = next((name for name, endpoint in self.endpoints.items()
+                                 if endpoint.get("project") == row.get("project")
+                                 and endpoint.get("role") == row.get("role")), None)
+                binding = self.desktop.bindings.get(internal, {}) if internal else {}
+                if internal and binding.get("session_id") and row["id"] == "desktop:" + binding["session_id"]:
+                    status = self.role_transport_health(internal)
+                    item["connection_status"] = status.get("state")
+                    item["online"] = bool(item["online"] and status.get("online"))
+                    if not item["online"] and not item.get("retired"):
+                        item["effective_status"] = ("reconnecting" if status.get("state") in (
+                            "reconnecting", "pipe_missing", "runtime_missing",
+                            "app_tools_server_missing", "service_unavailable",
+                            "session_missing") else "offline")
+            result.append(item)
+        if not include_offline:
+            result = [item for item in result if item["online"]]
+        return result
+
+    def role_activity(self):
+        """Build per-role work and directional traffic for the live topology."""
+        activity = {name: {
+            "queued_tasks": 0, "running_tasks": 0,
+            "last_send_event_id": None, "last_send_at": None, "last_send_kind": None,
+            "last_receive_event_id": None, "last_receive_at": None, "last_receive_kind": None,
+        } for name in self.endpoints}
+        snapshot = self.store.activity_snapshot()
+
+        def record(internal, direction, event_id, at, kind):
+            if internal not in activity or at is None:
+                return
+            prefix = "last_send" if direction == "send" else "last_receive"
+            current = activity[internal][prefix + "_at"]
+            if current is None or float(at) > float(current):
+                activity[internal][prefix + "_event_id"] = str(event_id)
+                activity[internal][prefix + "_at"] = float(at)
+                activity[internal][prefix + "_kind"] = kind
+
+        def resolve_bus_role(project, role):
+            if not role:
+                return None
+            try:
+                return find_role(self.config, role, project)
+            except ConfigError:
+                return None
+
+        def bus_time(value):
+            if not value:
+                return None
+            try:
+                parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                return parsed.timestamp()
+            except (TypeError, ValueError):
+                return None
+
+        for item in snapshot["active"]:
+            target = item.get("target")
+            if target not in activity or item.get("kind") == "agent_chat_wakeup":
+                continue
+            key = "running_tasks" if item.get("state") == "running" else "queued_tasks"
+            activity[target][key] += 1
+
+        for event in snapshot["events"]:
+            state = event.get("state")
+            event_id = "queue:{}:{}:{}".format(event.get("seq"), event.get("task_id"), state)
+            at = event.get("at")
+            if state == "queued":
+                record(event.get("sender"), "send", event_id, at, "task")
+            elif state == "running":
+                record(event.get("target"), "receive", event_id, at, "task")
+            elif state in TERMINAL and event.get("started") is not None:
+                record(event.get("target"), "send", event_id, at, "result")
+                record(event.get("sender"), "receive", event_id, at, "result")
+
+        requester_to_assignee = {"request", "verify", "cancel", "reassign"}
+        assignee_to_requester = {"claim", "result", "blocked", "release", "progress", "renew"}
+        for task in snapshot["bus_tasks"]:
+            requester = resolve_bus_role(task.get("project"), task.get("requester"))
+            assignee = resolve_bus_role(task.get("project"), task.get("assignee"))
+            if task.get("status") == "pending" and assignee in activity:
+                activity[assignee]["queued_tasks"] += 1
+            elif task.get("status") == "in_progress" and assignee in activity:
+                activity[assignee]["running_tasks"] += 1
+            kind = task.get("last_type")
+            if kind in requester_to_assignee:
+                sender, recipient = requester, assignee
+            elif kind in assignee_to_requester:
+                sender, recipient = assignee, requester
+            else:
+                continue
+            at = bus_time(task.get("updated_at"))
+            base = "bus:{}:{}:{}:{}".format(
+                task.get("project"), task.get("task_id"), task.get("sequence"), kind)
+            record(sender, "send", base + ":send", at, kind)
+            record(recipient, "receive", base + ":receive", at, kind)
+        return activity
 
     def call(self, method, p):
         if not isinstance(p, dict):
             raise ValueError("params_must_be_object")
+        connection_refresh = None
+        if method in ("health", "status", "session_register", "session_heartbeat",
+                      "desktop_bind", "session_takeover", "transport_refresh"):
+            connection_refresh = self._refresh_codex_context(
+                p, force=(method == "transport_refresh"))
         if method == "health":
+            # A crashed role connector is restarted independently; unrelated
+            # transports and the Hub itself stay up.
+            self._ensure_desktop_connectors()
             agent_chat_health = self.agent_chat.health()
+            transports = {
+                "codex_app_tools": self.desktop.transport_health(self.store),
+                "opencode_native": self.desktop.transport_health(self.store, "opencode_native"),
+            }
+            for transport in ("qoder_native", "qoder_accessibility", "qoder_extension", "dsh_plugin"):
+                transports[transport] = self.passive_transport_health(transport)
+            transport_degraded = any(item.get("degraded", False) for item in transports.values())
             return {"status": "running", "pid": os.getpid(), "mode": "multi_project_hub", "version": __version__,
                     "degraded": bool(agent_chat_health.get("degraded")
-                                     or not agent_chat_health.get("ok", True)),
+                                     or not agent_chat_health.get("ok", True)
+                                     or transport_degraded),
                     "states": self.store.stats(), "projects": len(self.config["projects"]),
                     "roles": len(self.endpoints), "recovered": self.recovered,
                     "agent_chat": self.agent_chat.status(),
                     "agent_chat_health": agent_chat_health,
+                    "transports": transports,
                     "workers_alive": sum(w.is_alive() for w in self.workers),
                     "failed_tasks": self.store.recent_failures(5)}
         if method == "status":
             return {"health": self.call("health", {}), "roles": self.call("roles", {})}
         if method in ("roles", "projects", "role_list"):
+            role_activity = self.role_activity()
             projects = projects_summary(self.config)
             for project in projects:
                 for role in project["roles"]:
                     internal = role["address"]
+                    role.update(role_activity.get(internal, {}))
                     role["sessions"] = self.public_sessions(project=project["id"], role=role["role"])
                     role["mode"] = self.target_mode(internal)
                     role["desktop_wakeup"] = internal in self.desktop.bindings and not self.desktop_input_disabled(internal)
@@ -336,6 +642,17 @@ class Broker:
                     binding = self.desktop.bindings.get(internal, {})
                     role["session_title"] = titles.desktop_title(binding.get("transport"), binding.get("session_id"))
                     role["pending"] = self.store.has_pending(internal)
+                    transport_health = self.role_transport_health(internal)
+                    wakeups = self.store.wakeup_stats(internal)
+                    transport_health.update({
+                        "pending_wakeups": wakeups["pending"],
+                        "needs_attention": wakeups["needs_attention"],
+                        "pending_result_wakeups": wakeups["pending_results"],
+                    })
+                    role["transport_health"] = transport_health
+                    role["connection_status"] = transport_health.get("state")
+                    role["online"] = bool(transport_health.get("online")) if internal in self.desktop.bindings else any(
+                        item.get("online") for item in role["sessions"])
                     # The tray and the skill both need an explicit signal.  A
                     # mismatch used to be invisible until tasks failed.
                     role["expected_adapter"] = adapter_for_transport(binding.get("transport"))
@@ -355,8 +672,21 @@ class Broker:
                                "expected_adapter": adapter_for_transport(
                                    self.desktop.bindings.get(name, {}).get("transport")),
                                "adapter_transport_mismatch": self.binding_mismatch(name),
+                               "transport_health": self.role_transport_health(name),
                                "sessions": self.public_sessions(project=endpoint.get("project"), role=endpoint.get("role"))})
             return result
+        if method == "transport_refresh":
+            return connection_refresh or {"updated": False, "reason": "no_codex_context"}
+        if method == "connectors_start":
+            self._ensure_desktop_connectors()
+            return {"started": True}
+        if method == "transport_report":
+            agent = self.resolve(p.get("agent"), p.get("project"), required=True)
+            result = self.desktop.report_transport(
+                agent, p.get("transport"), p.get("state"), error=p.get("error"),
+                summary=p.get("summary"), connection_id=p.get("connection_id"),
+                delivered=bool(p.get("delivered", False)), failure_kind=p.get("failure_kind"))
+            return {"status": result, "connector_epoch": self.desktop.connector_epoch(p.get("transport"))}
         if method == "desktop_bind":
             value = p.get("agent", p.get("role"))
             if not isinstance(value, str):
@@ -377,6 +707,14 @@ class Broker:
                         + " cannot use transport=" + str(transport) + "; it belongs to adapter="
                         + expected + ". Use session migrate-and-takeover to change the adapter,"
                         " or switch to a chat from the role's own client")
+                if transport == "qoder_accessibility":
+                    if (self.state_dir / "qoder-input-disabled").exists():
+                        raise ValueError(
+                            "qoder_desktop_input_disabled: use the qoder_native connector; "
+                            "accessibility delivery is disabled")
+                    if internal != "qoder":
+                        raise ValueError(
+                            "qoder_accessibility_project_role_unsupported: project roles require qoder_native")
             if chat and (self.store.session_retired("desktop:" + chat) or self.store.session_retired(chat)):
                 raise ValueError("session_retired: 这个会话已被用户结束，请先接管到另一个会话")
             # Binding a role changes routing, so never redirect already accepted work.
@@ -398,9 +736,28 @@ class Broker:
             if chat:
                 self.store.register_session("desktop:" + chat, endpoint["project"], endpoint["role"],
                                             endpoint["adapter"], transport, "桌面聊天绑定")
+                if transport in ("codex_app_tools", "opencode_native"):
+                    self._ensure_desktop_connectors()
             self.write_active_sessions(endpoint["project"])
-            return {"agent": internal, "address": internal, "mode": "desktop_session" if chat else "independent_cli_task",
-                    "session_id": chat, "transport": transport}
+            return {"agent": internal, "address": internal,
+                    "mode": "desktop_session" if chat else self.target_mode(internal),
+                    "session_id": chat, "transport": transport,
+                    "connection_refresh": connection_refresh}
+        if method == "desktop_heartbeat":
+            internal = self.resolve(p.get("agent", p.get("role")), p.get("project"), required=True)
+            binding = self.desktop.bindings.get(internal) or {}
+            if (binding.get("session_id") != p.get("session_id")
+                    or binding.get("transport") != p.get("transport")):
+                raise ValueError("desktop_session_not_bound: call bridge_register in this OpenCode session")
+            try:
+                row = self.store.heartbeat_session("desktop:" + binding["session_id"])
+            except ValueError:
+                endpoint = self.endpoints[internal]
+                row = self.store.register_session(
+                    "desktop:" + binding["session_id"], endpoint["project"], endpoint["role"],
+                    endpoint["adapter"], binding["transport"], "桌面聊天绑定")
+            self._ensure_desktop_connectors()
+            return {"session": row, "transport_health": self.role_transport_health(internal)}
         if method == "session_takeover":
             # One action moves a role to another chat: bind, retire the rest, and
             # publish the active session so the bus can refuse the old one.
@@ -433,6 +790,8 @@ class Broker:
                     self.desktop.bind(internal, {"session_id": takeover_session, "transport": transport})
                 self.store.takeover_session("desktop:" + takeover_session, project_id, role_id,
                                             endpoint["adapter"], transport)
+                if transport in ("codex_app_tools", "opencode_native"):
+                    self._ensure_desktop_connectors()
                 self.write_active_sessions(project_id)
                 postconditions = self.takeover_postconditions(
                     internal, takeover_session, transport, expected)
@@ -457,7 +816,8 @@ class Broker:
                     "adapter_changed": False, "hub_restarted": False,
                     "active_session": takeover_session,
                     "retired": retired, "retired_sessions": retired,
-                    "postconditions": postconditions}
+                    "postconditions": postconditions,
+                    "connection_refresh": connection_refresh}
         if method == "session_retire":
             retire_target = p.get("session_id")
             if not isinstance(retire_target, str) or not retire_target:
@@ -497,11 +857,19 @@ class Broker:
             seconds = p.get("seconds", 40)
             if type(seconds) not in (int, float) or not math.isfinite(seconds) or not 0 <= seconds <= 45:
                 raise ValueError("invalid_receive_timeout")
+            recover_received = p.get("recover_received", False)
+            if type(recover_received) is not bool:
+                raise ValueError("invalid_recover_received")
+            if recover_received and binding.get("transport") != "opencode_native":
+                raise ValueError("recovery_not_supported_for_transport")
             try:
                 self.store.heartbeat_session("desktop:" + p["session_id"])
             except ValueError:
                 pass
-            return self.desktop.receive(internal, p["session_id"], seconds)
+            return self.desktop.receive(internal, p["session_id"], seconds,
+                                        transport=p.get("transport"),
+                                        connector_epoch=p.get("connector_epoch"),
+                                        recover_received=recover_received)
         if method == "desktop_finish":
             if p.get("state") not in ("succeeded", "failed", "cancelled", "interrupted"):
                 raise ValueError("invalid_desktop_result_state")
@@ -530,9 +898,10 @@ class Broker:
                                               endpoint["adapter"], transport, description, metadata)
             return {"session": row, "address": internal, "role": {"role": endpoint["role"],
                     "description": endpoint.get("description", ""), "peers": endpoint.get("peers", []),
-                    "mode": self.target_mode(internal)}}
+                    "mode": self.target_mode(internal)}, "connection_refresh": connection_refresh}
         if method == "session_heartbeat":
-            return {"session": self.store.heartbeat_session(config_session_id(p.get("session")))}
+            return {"session": self.store.heartbeat_session(config_session_id(p.get("session"))),
+                    "connection_refresh": connection_refresh}
         if method == "session_list":
             return {"sessions": self.public_sessions(p.get("project"), p.get("role"),
                                                      p.get("include_offline", True))}
@@ -610,6 +979,48 @@ class Broker:
                     "sender": sender, "target": target, "mode": self.target_mode(target),
                     "kind": kind, "delivery_timeout": delivery_timeout,
                     "interrupt_on_timeout": interrupt}
+        if method == "pull":
+            internal = self.resolve(label(p["recipient"]), p.get("project"), required=True)
+            if self.target_mode(internal) != "mcp_pull":
+                raise ValueError("role_is_not_mcp_pull")
+            while True:
+                task = self.store.claim(internal)
+                if task is None:
+                    return {"task": None, "address": internal}
+                if (task["payload"].get("kind") != "agent_chat_wakeup" and
+                        task["created"] + task["payload"].get("queue_ttl", 3600) < time.time()):
+                    self.store.finish(task["id"], "timed_out", {
+                        "error": "queue_deadline", "summary": "Expired before WorkBuddy claimed it."})
+                    continue
+                payload = task["payload"]
+                return {"task": {"id": task["id"], "from": task["sender"],
+                                  "prompt": payload["prompt"], "context": payload.get("context", []),
+                                  "timeout": payload.get("timeout"), "kind": payload.get("kind")},
+                        "address": internal}
+        if method == "complete":
+            internal = self.resolve(label(p["recipient"]), p.get("project"), required=True)
+            task = self.store.get(p["task_id"])
+            if task["target"] != internal:
+                raise ValueError("task_recipient_mismatch")
+            if task["state"] in TERMINAL:
+                return {"task_id": task["id"], "state": task["state"], "duplicate": True}
+            if task["state"] != "running":
+                raise ValueError("task_not_claimed")
+            state = p.get("state", "succeeded")
+            if state not in ("succeeded", "failed"):
+                raise ValueError("invalid_completion_state")
+            summary = p.get("summary")
+            if not isinstance(summary, str) or not summary.strip() or len(summary) > 800:
+                raise ValueError("summary_must_be_1_to_800_characters")
+            error = p.get("error")
+            if error is not None and (not isinstance(error, str) or len(error) > 200):
+                raise ValueError("error_must_be_up_to_200_characters")
+            self.store.finish(task["id"], state, {"summary": summary, "error": error,
+                                                   "mode": "mcp_pull"})
+            with self.cv:
+                self.cv.notify_all()
+            return {"task_id": task["id"], "state": self.store.get(task["id"])["state"],
+                    "duplicate": False}
         if method == "task":
             return self.public_task(p["task_id"])
         if method == "wait":

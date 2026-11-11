@@ -8,6 +8,37 @@ import threading
 import time
 import uuid
 
+from .codex_connection import active_connection_id, runtime_problem
+
+
+RECOVERABLE_CODEX_ERRORS = {
+    "desktop_chat_busy", "pipe_missing", "runtime_missing",
+    "desktop_bridge_disconnected", "desktop_delivery_timeout",
+    "connection_context_missing", "app_tools_server_missing",
+}
+
+
+def classify_codex_error(error, connection=None):
+    """Separate chat backpressure from broken app transport/runtime state."""
+    text = str(error)
+    lowered = text.lower()
+    command = (connection or {}).get("command") or []
+    if "desktop_chat_busy" in lowered:
+        return "desktop_chat_busy"
+    if command and not Path(command[0]).is_file():
+        return "runtime_missing"
+    if len(command) > 1 and not Path(command[1]).is_file():
+        return "app_tools_server_missing"
+    if ("enoent" in lowered and ("pipe" in lowered or "codex-app-tools" in lowered)):
+        return "pipe_missing"
+    if "desktop_bridge_disconnected" in lowered:
+        return "desktop_bridge_disconnected"
+    if "winerror 2" in lowered or "系统找不到指定的文件" in text:
+        return "runtime_missing"
+    if "codex_connection_context_unavailable" in lowered:
+        return "connection_context_missing"
+    return "codex_desktop_transport"
+
 
 class McpProcess:
     """Small JSONL MCP client for the installed, vendor supplied desktop bridge."""
@@ -107,11 +138,145 @@ class CodexDesktop:
 class DesktopHub:
     """Local connector rendezvous. Empty receives wait in code, never in a model."""
     def __init__(self, state_dir):
-        self.path = Path(state_dir) / "desktop-bindings.json"
+        self.state_dir = Path(state_dir)
+        self.path = self.state_dir / "desktop-bindings.json"
+        self.transport_path = self.state_dir / "transport-status.json"
         self.cv = threading.Condition()
         self.jobs = {}
         self.closed = False
         self.bindings = json.loads(self.path.read_text(encoding="utf-8")) if self.path.exists() else {}
+        try:
+            persisted = json.loads(self.transport_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            persisted = {}
+        self.transport_status = persisted if isinstance(persisted, dict) else {}
+        self.transport_epochs = {}
+        for item in self.transport_status.values():
+            transport = item.get("transport") if isinstance(item, dict) else None
+            if transport:
+                self.transport_epochs[transport] = max(
+                    self.transport_epochs.get(transport, 0), int(item.get("epoch") or 0))
+
+    def _save_transport_status(self):
+        temporary = self.transport_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(self.transport_status, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+        os.replace(temporary, self.transport_path)
+
+    def refresh_transport(self, transport, connection_id=None):
+        """Invalidate only one connector family and wake its long polls."""
+        with self.cv:
+            epoch = self.transport_epochs.get(transport, 0) + 1
+            self.transport_epochs[transport] = epoch
+            now = time.time()
+            for agent, binding in self.bindings.items():
+                if binding.get("transport") != transport:
+                    continue
+                previous = self.transport_status.get(agent, {})
+                self.transport_status[agent] = {
+                    **previous, "agent": agent, "transport": transport,
+                    "state": "reconnecting", "connection_id": connection_id,
+                    "epoch": epoch, "updated_at": now,
+                    "last_error": None, "failure_kind": None,
+                }
+            self._save_transport_status()
+            self.cv.notify_all()
+            return epoch
+
+    def report_transport(self, agent, transport, state, *, error=None, summary=None,
+                         connection_id=None, delivered=False, failure_kind=None):
+        allowed = {"ready", "busy", "reconnecting", "degraded", "offline",
+                   "pipe_missing", "runtime_missing", "app_tools_server_missing",
+                   "service_unavailable", "session_missing", "auth_required", "cli_missing"}
+        if state not in allowed:
+            raise ValueError("invalid_transport_state")
+        with self.cv:
+            binding = self.bindings.get(agent) or {}
+            if binding.get("transport") != transport:
+                raise ValueError("transport_report_binding_mismatch")
+            previous = self.transport_status.get(agent, {})
+            failures = int(previous.get("consecutive_failures") or 0)
+            if failure_kind and state != "busy":
+                failures += 1
+            elif state == "ready":
+                failures = 0
+            now = time.time()
+            epoch = self.transport_epochs.get(transport, int(previous.get("epoch") or 0))
+            item = {
+                **previous, "agent": agent, "transport": transport, "state": state,
+                "updated_at": now, "epoch": epoch,
+                "connection_id": connection_id or previous.get("connection_id"),
+                "consecutive_failures": failures,
+                "last_error": str(error or summary)[:500] if (error or summary) else None,
+                "failure_kind": failure_kind,
+            }
+            if delivered:
+                item["last_success_at"] = now
+                item["consecutive_failures"] = 0
+                item["last_error"] = None
+                item["failure_kind"] = None
+                item["state"] = "ready"
+            self.transport_status[agent] = item
+            self._save_transport_status()
+            self.cv.notify_all()
+            return dict(item)
+
+    def connector_epoch(self, transport):
+        return self.transport_epochs.get(transport, 0)
+
+    def connection_status(self, agent):
+        binding = self.bindings.get(agent) or {}
+        transport = binding.get("transport")
+        if not transport:
+            return {"state": "unbound", "transport": None, "online": False}
+        item = dict(self.transport_status.get(agent) or {})
+        item.setdefault("transport", transport)
+        if transport == "codex_app_tools":
+            problem = runtime_problem(self.state_dir, binding.get("session_id"))
+            if problem:
+                item.update({"state": problem, "online": False, "failure_kind": problem})
+                return item
+            current = active_connection_id(self.state_dir)
+            if current and item.get("connection_id") != current:
+                item.update({"state": "reconnecting", "online": False})
+                return item
+        updated = float(item.get("updated_at") or 0)
+        if not updated or time.time() - updated > 95:
+            item.update({"state": "offline", "online": False,
+                         "failure_kind": item.get("failure_kind") or "connector_heartbeat_stale"})
+            return item
+        state = item.get("state") or "reconnecting"
+        item["online"] = state in ("ready", "busy")
+        return item
+
+    def transport_health(self, store, transport="codex_app_tools"):
+        roles = []
+        for agent, binding in self.bindings.items():
+            if binding.get("transport") != transport:
+                continue
+            item = self.connection_status(agent)
+            wakeups = store.wakeup_stats(agent)
+            item.update({"agent": agent, "session_id": binding.get("session_id"),
+                         "pending_wakeups": wakeups["pending"],
+                         "needs_attention": wakeups["needs_attention"],
+                         "pending_result_wakeups": wakeups["pending_results"]})
+            roles.append(item)
+        degraded_states = {"reconnecting", "degraded", "offline", "pipe_missing",
+                           "runtime_missing", "app_tools_server_missing",
+                           "connection_context_missing", "service_unavailable",
+                           "session_missing", "auth_required", "cli_missing"}
+        degraded = any(item.get("state") in degraded_states for item in roles)
+        failures = sum(int(item.get("consecutive_failures") or 0) for item in roles)
+        pending_results = sum(item["pending_result_wakeups"] for item in roles)
+        last_success = max((float(item.get("last_success_at") or 0) for item in roles), default=0)
+        return {
+            "ok": not degraded, "degraded": degraded, "transport": transport,
+            "state": ("degraded" if degraded else ("ready" if roles else "unused")),
+            "roles": roles, "consecutive_failures": failures,
+            "last_success_at": last_success or None,
+            "pending_result_wakeups": pending_results,
+            "needs_attention": sum(item["needs_attention"] for item in roles),
+        }
 
     def bind(self, agent, binding):
         with self.cv:
@@ -206,7 +371,7 @@ class DesktopHub:
                "interrupt_on_timeout": bool(interrupt_on_timeout),
                "delivery_timeout": delivery_timeout,
                "execution_timeout": execution_timeout,
-               "received_at": None}
+               "received_at": None, "claimed_at": None}
         with self.cv:
             self.jobs[task_id] = job
             self.cv.notify_all()
@@ -233,14 +398,6 @@ class DesktopHub:
                                 delivered=False, error="desktop_delivery_timeout",
                                 session_id=binding["session_id"])
                     else:
-                        if job["notify"]:
-                            # A notification is complete once the chat has it.
-                            # The target keeps working on its own inbox/task.
-                            job["detached"] = True
-                            return self._result(
-                                "succeeded", "通知已投递；目标会话继续处理（未打断）。",
-                                delivered=True, detached=True, notification=True,
-                                session_id=binding["session_id"])
                         if execution_deadline is None:
                             execution_deadline = now + execution_timeout
                             job["received_at"] = now
@@ -268,10 +425,16 @@ class DesktopHub:
                 if not job["detached"]:
                     self.jobs.pop(task_id, None)
 
-    def receive(self, agent, session_id, seconds):
+    def receive(self, agent, session_id, seconds, transport=None, connector_epoch=None,
+                recover_received=False):
         deadline = time.monotonic() + seconds
         with self.cv:
             while not self.closed:
+                if transport and connector_epoch is not None:
+                    current_epoch = self.transport_epochs.get(transport, 0)
+                    if int(connector_epoch) != current_epoch:
+                        return {"action": "refresh", "transport": transport,
+                                "connector_epoch": current_epoch}
                 for job in self.jobs.values():
                     if job["agent"] != agent or job["session_id"] != session_id:
                         continue
@@ -281,9 +444,20 @@ class DesktopHub:
                         return {k: job.get(k) for k in ("task_id", "nonce", "action", "session_id",
                                                          "notify", "interrupt_on_timeout")}
                     if not job["received"]:
-                        job["received"] = True  # Never redeliver after an uncertain disconnect.
+                        job["received"] = True  # Generic connectors never redeliver after an uncertain disconnect.
+                        job["claimed_at"] = time.monotonic()
                         return {k: job.get(k) for k in ("task_id", "nonce", "action", "session_id", "prompt",
                                                          "notify", "interrupt_on_timeout")}
+                    if (recover_received and job.get("action") == "run" and job.get("result") is None
+                            and time.monotonic() - float(job.get("claimed_at") or 0) >= 5):
+                        # Only connectors that can inspect the target transcript
+                        # opt into this lease recovery.  They must prove the
+                        # stable task marker absent before submitting again.
+                        job["claimed_at"] = time.monotonic()
+                        item = {k: job.get(k) for k in ("task_id", "nonce", "action", "session_id", "prompt",
+                                                              "notify", "interrupt_on_timeout")}
+                        item["recovery"] = True
+                        return item
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     break

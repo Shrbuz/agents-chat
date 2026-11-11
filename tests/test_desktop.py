@@ -128,6 +128,22 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(result["result"]["summary"],"Backend ready at localhost")
         self.assertFalse(self.broker.store.has_pending("qoder"))
 
+    def test_disabled_accessibility_binding_is_rejected_instead_of_looking_online(self):
+        (self.root / "qoder-input-disabled").write_text("disabled\n", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "input_disabled"):
+            self.broker.call("desktop_bind", {
+                "agent": "qoder", "session_id": "chat-1", "transport": "qoder_accessibility"})
+
+    def test_project_role_cannot_fall_back_to_single_chat_accessibility(self):
+        self.broker.endpoints["demo.frontend"] = {
+            "adapter": "qoder", "cwd": str(self.root), "command": [sys.executable],
+            "project": "demo", "role": "frontend", "enabled": True,
+        }
+        with self.assertRaisesRegex(ValueError, "project_role_unsupported"):
+            self.broker.call("desktop_bind", {
+                "agent": "demo.frontend", "session_id": "chat-1",
+                "transport": "qoder_accessibility"})
+
     def test_codex_cursor_ignores_old_or_different_turn_output(self):
         def snapshot(turn, message_turn="new", text="actual result"):
             return {"polls":[{"cursor":"cursor-2", "thread":{"id":"chat-1"}, "latestTurn":{"id":turn,"status":"completed"},

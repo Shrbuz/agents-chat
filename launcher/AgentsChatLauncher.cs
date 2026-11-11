@@ -15,8 +15,8 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyDescription("Multi-project, multi-role local agent collaboration hub")]
 [assembly: AssemblyCompany("Agents Chat")]
 [assembly: AssemblyProduct("Agents Chat")]
-[assembly: AssemblyVersion("0.6.11.0")]
-[assembly: AssemblyFileVersion("0.6.11.0")]
+[assembly: AssemblyVersion("0.7.0.0")]
+[assembly: AssemblyFileVersion("0.7.0.0")]
 
 namespace AgentsChatLauncher
 {
@@ -58,16 +58,29 @@ namespace AgentsChatLauncher
                 {
                     int code = RunPython(root, "launch_qoder_native.py", Slice(args, 1), false, false);
                     if (code != 0)
-                        MessageBox.Show("Qoder 原生连接没有启动。\r\n请先完全退出 Qoder（包括托盘图标），再双击这个快捷方式。",
+                        MessageBox.Show("Qoder 原生连接没有修复并启动。\r\n请先完全退出 Qoder（包括托盘图标），再重试修复入口。",
                             "Agents Chat", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                     return code;
                 }
                 bool openPanel = args.Length > 0 && (EqualsCommand(args[0], "ui") || EqualsCommand(args[0], "panel"));
+                bool openTray = args.Length > 0 && EqualsCommand(args[0], "tray");
                 if (openPanel)
                 {
                     try
                     {
                         using (EventWaitHandle existing = EventWaitHandle.OpenExisting(@"Local\AgentsChatShow05"))
+                        {
+                            existing.Set();
+                            return 0;
+                        }
+                    }
+                    catch (WaitHandleCannotBeOpenedException) { }
+                }
+                if (openTray)
+                {
+                    try
+                    {
+                        using (EventWaitHandle existing = EventWaitHandle.OpenExisting(@"Local\AgentsChatTrayPanel05"))
                         {
                             existing.Set();
                             return 0;
@@ -82,7 +95,8 @@ namespace AgentsChatLauncher
                     {
                         try
                         {
-                            using (EventWaitHandle existing = EventWaitHandle.OpenExisting(@"Local\AgentsChatShow05"))
+                            using (EventWaitHandle existing = EventWaitHandle.OpenExisting(
+                                openTray ? @"Local\AgentsChatTrayPanel05" : @"Local\AgentsChatShow05"))
                                 existing.Set();
                         }
                         catch (WaitHandleCannotBeOpenedException)
@@ -99,6 +113,8 @@ namespace AgentsChatLauncher
                         app.Start();
                         if (openPanel)
                             app.OpenPanel();
+                        else if (openTray)
+                            app.OpenTrayPanel();
                         Application.Run(app);
                     }
                 }
@@ -279,16 +295,16 @@ namespace AgentsChatLauncher
         private readonly string stateDir;
         private readonly string cliExe;
         private readonly NotifyIcon icon;
-        private readonly ContextMenuStrip menu;
-        private readonly ToolStripMenuItem header;
-        private readonly ToolStripMenuItem toggle;
         private readonly System.Windows.Forms.Timer timer;
         private readonly object statusLock = new object();
-        private readonly Icon trayIcon;
+        private Icon trayIcon;
+        private TrayVisualState trayVisualState = TrayVisualState.Offline;
         private readonly Form dispatcher = new Form();
         private readonly EventWaitHandle showEvent;
+        private readonly EventWaitHandle showTrayEvent;
         private readonly EventWaitHandle quitEvent;
         private StatusForm panel;
+        private TrayPopoverForm trayPanel;
         private bool busy;
         private string lastMessage = "";
         private Dictionary<string, object> lastStatus;
@@ -321,6 +337,21 @@ namespace AgentsChatLauncher
             });
             watcher.IsBackground = true;
             watcher.Start();
+            showTrayEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\AgentsChatTrayPanel05");
+            Thread trayWatcher = new Thread(delegate()
+            {
+                try
+                {
+                    while (showTrayEvent.WaitOne())
+                    {
+                        try { dispatcher.BeginInvoke(new Action(OpenTrayPanel)); }
+                        catch { }
+                    }
+                }
+                catch (ObjectDisposedException) { }
+            });
+            trayWatcher.IsBackground = true;
+            trayWatcher.Start();
             quitEvent = new EventWaitHandle(false, EventResetMode.AutoReset, @"Local\AgentsChatQuit05");
             Thread quitWatcher = new Thread(delegate()
             {
@@ -337,39 +368,21 @@ namespace AgentsChatLauncher
             quitWatcher.IsBackground = true;
             quitWatcher.Start();
 
-            menu = new ContextMenuStrip();
-            header = new ToolStripMenuItem("Agents Chat · 正在启动…");
-            header.Enabled = false;
-            menu.Items.Add(header);
-            menu.Items.Add(new ToolStripSeparator());
-            ToolStripMenuItem open = new ToolStripMenuItem("打开状态窗口…");
-            open.Click += delegate { OpenPanel(); };
-            menu.Items.Add(open);
-            toggle = new ToolStripMenuItem("启动后台");
-            toggle.Click += delegate { ToggleHub(); };
-            menu.Items.Add(toggle);
-            menu.Items.Add(new ToolStripSeparator());
-            ToolStripMenuItem openConfig = new ToolStripMenuItem("打开配置目录");
-            openConfig.Click += delegate { OpenFolder(Path.GetDirectoryName(configPath)); };
-            menu.Items.Add(openConfig);
-            ToolStripMenuItem openData = new ToolStripMenuItem("打开数据目录");
-            openData.Click += delegate { OpenFolder(stateDir); };
-            menu.Items.Add(openData);
-            menu.Items.Add(new ToolStripSeparator());
-            ToolStripMenuItem quit = new ToolStripMenuItem("退出托盘（后台继续）");
-            quit.Click += delegate { ExitThread(); };
-            menu.Items.Add(quit);
-            ToolStripMenuItem quitAll = new ToolStripMenuItem("停止后台并退出");
-            quitAll.Click += delegate { StopHubAndExit(); };
-            menu.Items.Add(quitAll);
-
-            trayIcon = BuildIcon();
+            trayIcon = BuildIcon(TrayVisualState.Offline);
             icon = new NotifyIcon();
             icon.Icon = trayIcon;
             icon.Text = "Agents Chat";
             icon.Visible = true;
-            icon.ContextMenuStrip = menu;
-            icon.DoubleClick += delegate { OpenPanel(); };
+            icon.MouseClick += delegate(object sender, MouseEventArgs args)
+            {
+                if (args.Button == MouseButtons.Left || args.Button == MouseButtons.Right)
+                    OpenTrayPanel();
+            };
+            icon.DoubleClick += delegate
+            {
+                if (trayPanel != null) trayPanel.Hide();
+                OpenPanel();
+            };
 
             timer = new System.Windows.Forms.Timer();
             timer.Interval = 3000;
@@ -399,39 +412,11 @@ namespace AgentsChatLauncher
             return preferred;
         }
 
-        private static Icon BuildIcon()
+        private static Icon BuildIcon(TrayVisualState state)
         {
-            try
-            {
-                Bitmap bitmap = new Bitmap(32, 32);
-                using (Graphics graphics = Graphics.FromImage(bitmap))
-                {
-                    graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                    graphics.Clear(Color.Transparent);
-                    using (Brush bubble = new SolidBrush(Color.FromArgb(22, 119, 255)))
-                        graphics.FillEllipse(bubble, 1, 1, 29, 25);
-                    using (Brush dot = new SolidBrush(Color.White))
-                    {
-                        graphics.FillEllipse(dot, 9, 10, 3, 3);
-                        graphics.FillEllipse(dot, 14, 10, 3, 3);
-                        graphics.FillEllipse(dot, 19, 10, 3, 3);
-                    }
-                    Point[] tail = new Point[] { new Point(9, 24), new Point(16, 24), new Point(12, 30) };
-                    using (Brush bubble = new SolidBrush(Color.FromArgb(22, 119, 255)))
-                        graphics.FillPolygon(bubble, tail);
-                }
-                IntPtr handle = bitmap.GetHicon();
-                try { return (Icon)Icon.FromHandle(handle).Clone(); }
-                finally { DestroyIcon(handle); bitmap.Dispose(); }
-            }
-            catch
-            {
-                return SystemIcons.Application;
-            }
+            try { return RelayThemeIcon.Create(state); }
+            catch { return SystemIcons.Application; }
         }
-
-        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
-        private static extern bool DestroyIcon(IntPtr handle);
 
         private void OpenFolder(string path)
         {
@@ -499,11 +484,33 @@ namespace AgentsChatLauncher
             {
                 lastMessage = text;
                 try { icon.Text = text.Length > 63 ? text.Substring(0, 63) : text; } catch { }
-                header.Text = text;
             }
-            toggle.Text = running ? "停止后台" : "启动后台";
+            TrayVisualState nextState = VisualState(status, running);
+            if (nextState != trayVisualState)
+            {
+                trayVisualState = nextState;
+                Icon nextIcon = BuildIcon(nextState);
+                Icon previous = trayIcon;
+                trayIcon = nextIcon;
+                icon.Icon = nextIcon;
+                if (previous != null) previous.Dispose();
+            }
             if (panel != null)
                 panel.SetStatus(status, configPath, stateDir);
+            if (trayPanel != null)
+                trayPanel.SetStatus(status, configPath, stateDir);
+        }
+
+        private static TrayVisualState VisualState(Dictionary<string, object> status, bool running)
+        {
+            if (!running || status == null) return TrayVisualState.Offline;
+            Dictionary<string, object> health = Value(status, "health");
+            if (health != null && health.ContainsKey("degraded") && Convert.ToBoolean(health["degraded"]))
+                return TrayVisualState.Warning;
+            Dictionary<string, object> states = Value(health, "states");
+            if (Number(states, "running") > 0 || Number(states, "queued") > 0)
+                return TrayVisualState.Busy;
+            return TrayVisualState.Running;
         }
 
         private Dictionary<string, object> TryStatus()
@@ -660,6 +667,7 @@ namespace AgentsChatLauncher
 
         internal void OpenPanel()
         {
+            if (trayPanel != null) trayPanel.Hide();
             if (panel == null || panel.IsDisposed)
                 panel = new StatusForm(
                     delegate { ToggleHub(); },
@@ -676,6 +684,30 @@ namespace AgentsChatLauncher
                     panel.WindowState = FormWindowState.Normal;
                 panel.Activate();
             }
+        }
+
+        private void OpenPanelForRole(string projectId, string address)
+        {
+            OpenPanel();
+            if (panel != null) panel.SelectRole(projectId, address);
+        }
+
+        internal void OpenTrayPanel()
+        {
+            if (trayPanel == null || trayPanel.IsDisposed)
+            {
+                trayPanel = new TrayPopoverForm(
+                    delegate { OpenPanel(); },
+                    delegate { RefreshAsync(); },
+                    delegate { ToggleHub(); },
+                    delegate { OpenFolder(Path.GetDirectoryName(configPath)); },
+                    delegate { OpenFolder(stateDir); },
+                    delegate { ExitThread(); },
+                    delegate { StopHubAndExit(); },
+                    delegate(string projectId, string address) { OpenPanelForRole(projectId, address); });
+            }
+            trayPanel.SetStatus(lastStatus, configPath, stateDir);
+            trayPanel.ShowNearTray(Cursor.Position);
         }
 
         private Dictionary<string, object> Endpoint()
@@ -744,9 +776,10 @@ namespace AgentsChatLauncher
                 if (timer != null) timer.Dispose();
                 if (icon != null) icon.Dispose();
                 if (trayIcon != null) trayIcon.Dispose();
-                if (menu != null) menu.Dispose();
                 if (panel != null) panel.Dispose();
+                if (trayPanel != null) trayPanel.Dispose();
                 if (showEvent != null) showEvent.Dispose();
+                if (showTrayEvent != null) showTrayEvent.Dispose();
                 if (quitEvent != null) quitEvent.Dispose();
             }
             base.Dispose(disposing);
@@ -785,6 +818,7 @@ namespace AgentsChatLauncher
 
         private readonly ListView list;
         private readonly TextBox manual;
+        private readonly ImageList rowHeightImages;
 
         public SessionPickerForm(List<Dictionary<string, object>> sessions)
         {
@@ -793,15 +827,46 @@ namespace AgentsChatLauncher
             Height = 440;
             MinimumSize = new Size(520, 320);
             StartPosition = FormStartPosition.CenterParent;
-            Font = new Font("Microsoft YaHei UI", 9F);
+            Font = RelayTheme.Font9;
+            BackColor = RelayTheme.Window;
+            ForeColor = RelayTheme.Text;
+            try { Icon = RelayThemeIcon.Create(TrayVisualState.Running); } catch { }
 
             list = new ListView();
             list.Dock = DockStyle.Fill;
             list.View = View.Details;
             list.FullRowSelect = true;
-            list.GridLines = true;
+            list.GridLines = false;
             list.HeaderStyle = ColumnHeaderStyle.Nonclickable;
             list.HideSelection = false;
+            list.BackColor = RelayTheme.Surface1;
+            list.ForeColor = RelayTheme.Text2;
+            list.BorderStyle = BorderStyle.None;
+            list.OwnerDraw = true;
+            list.DrawColumnHeader += delegate(object sender, DrawListViewColumnHeaderEventArgs args)
+            {
+                using (Brush brush = new SolidBrush(RelayTheme.Surface2)) args.Graphics.FillRectangle(brush, args.Bounds);
+                RelayTheme.TextLine(args.Graphics, args.Header.Text, RelayTheme.Font8Medium, RelayTheme.Text2,
+                    new Rectangle(args.Bounds.X + 10, args.Bounds.Y, args.Bounds.Width - 16, args.Bounds.Height),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                using (Pen pen = new Pen(RelayTheme.Line)) args.Graphics.DrawLine(pen, args.Bounds.Left, args.Bounds.Bottom - 1, args.Bounds.Right, args.Bounds.Bottom - 1);
+            };
+            list.DrawItem += delegate { };
+            list.DrawSubItem += delegate(object sender, DrawListViewSubItemEventArgs args)
+            {
+                bool selected = args.Item.Selected;
+                using (Brush brush = new SolidBrush(selected ? RelayTheme.Surface3 : RelayTheme.Surface1))
+                    args.Graphics.FillRectangle(brush, args.Bounds);
+                Color color = args.ColumnIndex == 0 && args.SubItem.Text == "在线" ? RelayTheme.Accent :
+                    selected ? RelayTheme.Text : args.Item.ForeColor;
+                RelayTheme.TextLine(args.Graphics, args.SubItem.Text, RelayTheme.Font8, color,
+                    new Rectangle(args.Bounds.X + 10, args.Bounds.Y, args.Bounds.Width - 16, args.Bounds.Height),
+                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+                using (Pen pen = new Pen(Color.FromArgb(35, 42, 48))) args.Graphics.DrawLine(pen, args.Bounds.Left, args.Bounds.Bottom - 1, args.Bounds.Right, args.Bounds.Bottom - 1);
+            };
+            rowHeightImages = new ImageList();
+            rowHeightImages.ImageSize = new Size(1, 36);
+            list.SmallImageList = rowHeightImages;
             list.Columns.Add("状态", 56);
             list.Columns.Add("会话", 320);
             list.Columns.Add("备注", 190);
@@ -825,46 +890,74 @@ namespace AgentsChatLauncher
                 row.SubItems.Add(Convert.ToString(session["description"]));
                 row.SubItems.Add(Stamp(session["last_seen"]));
                 row.Tag = session;
-                if (online) row.ForeColor = Color.FromArgb(20, 110, 60);
+                row.ForeColor = online ? RelayTheme.Text2 : RelayTheme.Text3;
                 list.Items.Add(row);
             }
 
             Panel manualRow = new Panel();
             manualRow.Dock = DockStyle.Bottom;
-            manualRow.Height = 40;
+            manualRow.Height = 54;
+            manualRow.BackColor = RelayTheme.Window;
             Controls.Add(manualRow);
             Label manualLabel = new Label();
             manualLabel.Text = "或直接填写会话 ID：";
-            manualLabel.Left = 12;
-            manualLabel.Top = 12;
+            manualLabel.Left = 16;
+            manualLabel.Top = 18;
             manualLabel.Width = 150;
+            manualLabel.ForeColor = RelayTheme.Text2;
             manualRow.Controls.Add(manualLabel);
             manual = new TextBox();
             manual.Left = 165;
-            manual.Top = 9;
-            manual.Width = 540;
+            manual.Top = 13;
+            manual.Width = 550;
+            manual.BackColor = RelayTheme.Surface2;
+            manual.ForeColor = RelayTheme.Text;
+            manual.BorderStyle = BorderStyle.FixedSingle;
             manualRow.Controls.Add(manual);
 
             Panel buttons = new Panel();
             buttons.Dock = DockStyle.Bottom;
-            buttons.Height = 50;
+            buttons.Height = 60;
+            buttons.BackColor = RelayTheme.Window;
             Controls.Add(buttons);
 
             Button ok = new Button();
             ok.Text = "切换到这个会话";
             ok.Width = 150;
-            ok.Left = 12;
-            ok.Top = 10;
+            ok.Height = 36;
+            ok.Left = 16;
+            ok.Top = 12;
+            ok.FlatStyle = FlatStyle.Flat;
+            ok.FlatAppearance.BorderSize = 0;
+            ok.BackColor = RelayTheme.Accent;
+            ok.ForeColor = RelayTheme.AccentInk;
             ok.Click += delegate { Accept(); };
             buttons.Controls.Add(ok);
 
             Button cancel = new Button();
             cancel.Text = "取消";
             cancel.Width = 80;
-            cancel.Left = 172;
-            cancel.Top = 10;
+            cancel.Height = 36;
+            cancel.Left = 176;
+            cancel.Top = 12;
+            cancel.FlatStyle = FlatStyle.Flat;
+            cancel.FlatAppearance.BorderColor = RelayTheme.LineStrong;
+            cancel.BackColor = RelayTheme.Surface2;
+            cancel.ForeColor = RelayTheme.Text2;
             cancel.DialogResult = DialogResult.Cancel;
             buttons.Controls.Add(cancel);
+        }
+
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            RelayThemeIcon.UseDarkCaption(Handle);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && rowHeightImages != null) rowHeightImages.Dispose();
+            base.Dispose(disposing);
         }
 
         private void Accept()
@@ -897,7 +990,7 @@ namespace AgentsChatLauncher
             catch { return ""; }
         }
     }
-    internal sealed class StatusForm : Form
+    internal sealed class LegacyStatusForm : Form
     {
         private readonly ListView list;
         private readonly Label summary;
@@ -908,7 +1001,7 @@ namespace AgentsChatLauncher
         private readonly Action<string> openFolder;
         private readonly Action<string, string> takeover;
 
-        public StatusForm(Action startStop, Action stopAndExit, Action refresh, Action<string> openFolder,
+        public LegacyStatusForm(Action startStop, Action stopAndExit, Action refresh, Action<string> openFolder,
                           Action<string, string> takeover)
         {
             this.startStop = startStop;
@@ -917,7 +1010,7 @@ namespace AgentsChatLauncher
             this.openFolder = openFolder;
             this.takeover = takeover;
             Text = "Agents Chat · 多项目角色协作";
-            Width = 860;
+            Width = 1220;
             Height = 520;
             MinimumSize = new Size(640, 360);
             StartPosition = FormStartPosition.CenterScreen;
@@ -947,6 +1040,9 @@ namespace AgentsChatLauncher
             list.Columns.Add("模式", 128);
             list.Columns.Add("绑定会话", 200);
             list.Columns.Add("队列", 42);
+            list.Columns.Add("连续失败", 68);
+            list.Columns.Add("最后投递", 108);
+            list.Columns.Add("未唤醒结果", 82);
             list.Columns.Add("职责", 260);
             Controls.Add(list);
 
@@ -1053,11 +1149,26 @@ namespace AgentsChatLauncher
             Dictionary<string, object> states = health == null ? null : TrayApp.Value(health, "states");
             bool degraded = health != null && health.ContainsKey("degraded")
                 && Convert.ToBoolean(health["degraded"]);
+            Dictionary<string, object> transports = health == null ? null : TrayApp.Value(health, "transports");
+            int pendingResultWakeups = 0;
+            int transportFailures = 0;
+            if (transports != null)
+            {
+                foreach (KeyValuePair<string, object> pair in transports)
+                {
+                    Dictionary<string, object> item = pair.Value as Dictionary<string, object>;
+                    if (item == null) continue;
+                    pendingResultWakeups += TrayApp.Number(item, "pending_result_wakeups");
+                    transportFailures += TrayApp.Number(item, "consecutive_failures");
+                }
+            }
             summary.Text = "运行中 · " + projects + " 个项目 / " + roles + " 个角色 · 等待 "
                 + (states == null ? 0 : TrayApp.Number(states, "queued")) + " · 执行 "
                 + (states == null ? 0 : TrayApp.Number(states, "running"))
                 + (health != null && health.ContainsKey("version") ? " · v" + Convert.ToString(health["version"]) : "")
-                + (degraded ? " · ⚠ 唤醒链路异常" : "");
+                + (degraded ? " · ⚠ 传输/唤醒链路异常" : "")
+                + (transportFailures > 0 ? " · 传输连续失败 " + transportFailures : "")
+                + (pendingResultWakeups > 0 ? " · 未送达结果唤醒 " + pendingResultWakeups : "");
             summary.ForeColor = degraded ? Color.Firebrick : SystemColors.ControlText;
             Dictionary<string, object> rolesRoot = TrayApp.Value(status, "roles");
             int mismatchCount = 0;
@@ -1077,10 +1188,13 @@ namespace AgentsChatLauncher
                             ? role["adapter_transport_mismatch"] : false);
                         string expected = Convert.ToString(role.ContainsKey("expected_adapter")
                             ? role["expected_adapter"] : null);
+                        Dictionary<string, object> transportHealth = TrayApp.Value(role, "transport_health");
+                        string connectionState = Convert.ToString(role.ContainsKey("connection_status")
+                            ? role["connection_status"] : null);
                         ListViewItem row = new ListViewItem(Convert.ToString(project["name"]));
                         row.Tag = Convert.ToString(project["id"]) + "|" + Convert.ToString(role["address"]);
                         row.SubItems.Add(Convert.ToString(role["role"]));
-                        row.SubItems.Add(mismatch ? "⚠ 不一致" : "正常");
+                        row.SubItems.Add(mismatch ? "⚠ 不一致" : ConnectionStateText(connectionState));
                         row.SubItems.Add(Convert.ToString(role["adapter"]));
                         string roleTransport = Convert.ToString(role.ContainsKey("desktop_transport")
                             ? role["desktop_transport"] : null);
@@ -1088,6 +1202,9 @@ namespace AgentsChatLauncher
                         row.SubItems.Add(Convert.ToString(role["mode"]));
                         row.SubItems.Add(BindingText(role));
                         row.SubItems.Add(Convert.ToBoolean(role.ContainsKey("pending") ? role["pending"] : false) ? "有" : "无");
+                        row.SubItems.Add(Convert.ToString(transportHealth == null ? 0 : TrayApp.Number(transportHealth, "consecutive_failures")));
+                        row.SubItems.Add(LastSuccessText(transportHealth));
+                        row.SubItems.Add(Convert.ToString(transportHealth == null ? 0 : TrayApp.Number(transportHealth, "pending_result_wakeups")));
                         row.SubItems.Add(Convert.ToString(role["description"]));
                         if (mismatch)
                         {
@@ -1097,6 +1214,15 @@ namespace AgentsChatLauncher
                                 + "，绑定 transport=" + Convert.ToString(role["desktop_transport"])
                                 + "（属于 " + (string.IsNullOrWhiteSpace(expected) ? "未知" : expected) + "）。"
                                 + "请用 session migrate-and-takeover 修复。";
+                        }
+                        else if (!string.IsNullOrWhiteSpace(connectionState)
+                                 && connectionState != "ready" && connectionState != "unbound")
+                        {
+                            if (connectionState != "busy") row.ForeColor = Color.Firebrick;
+                            string lastError = Convert.ToString(transportHealth != null && transportHealth.ContainsKey("last_error")
+                                ? transportHealth["last_error"] : null);
+                            row.ToolTipText = "连接状态：" + ConnectionStateText(connectionState)
+                                + (string.IsNullOrWhiteSpace(lastError) ? "" : "；" + lastError);
                         }
                         list.Items.Add(row);
                     }
@@ -1108,6 +1234,41 @@ namespace AgentsChatLauncher
             }
             if (mismatchCount > 0)
                 summary.Text += " · ⚠ " + mismatchCount + " 个角色适配器与传输不一致";
+        }
+
+        private static string ConnectionStateText(string state)
+        {
+            switch (state)
+            {
+                case "ready": return "正常";
+                case "busy": return "忙碌/排队";
+                case "reconnecting": return "连接失效/待重连";
+                case "pipe_missing": return "Codex 管道失联";
+                case "runtime_missing": return "Codex 运行时失效";
+                case "app_tools_server_missing": return "App Tools 失效";
+                case "connection_context_missing": return "等待连接上下文";
+                case "service_unavailable": return "OpenCode 服务不可用";
+                case "session_missing": return "OpenCode 会话失效";
+                case "auth_required": return "OpenCode 待登录";
+                case "cli_missing": return "OpenCode CLI 缺失";
+                case "degraded": return "连接异常";
+                case "offline": return "离线";
+                case "unbound": return "未绑定";
+                default: return string.IsNullOrWhiteSpace(state) ? "正常" : state;
+            }
+        }
+
+        private static string LastSuccessText(Dictionary<string, object> health)
+        {
+            if (health == null || !health.ContainsKey("last_success_at") || health["last_success_at"] == null)
+                return "—";
+            try
+            {
+                double seconds = Convert.ToDouble(health["last_success_at"]);
+                DateTime value = new DateTime(1970, 1, 1, 0, 0, 0, DateTimeKind.Utc).AddSeconds(seconds).ToLocalTime();
+                return value.ToString("MM-dd HH:mm:ss");
+            }
+            catch { return "—"; }
         }
 
         private static string ShortId(string value)

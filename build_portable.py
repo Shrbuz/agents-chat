@@ -57,7 +57,8 @@ def extract_python(archive, destination):
 def copy_app(destination):
     from build_exe import build_all
     build_all(ROOT)
-    for name in ("bridge.py", "config.example.json", "README.md", "DESIGN.md", "INTEGRATION.md",
+    for name in ("bridge.py", "desktop_link.py", "opencode_desktop_link.py", "qoder_desktop_link.py",
+                 "launch_qoder_native.py", "config.example.json", "README.md", "DESIGN.md", "INTEGRATION.md",
                  "VERIFICATION.md", "HANDOFF.md", "install.ps1", "uninstall.ps1", "LICENSE", "VERSION"):
         source = ROOT / name
         if source.is_file():
@@ -72,6 +73,16 @@ def copy_app(destination):
     if connector.is_dir():
         shutil.copytree(connector, destination / "connectors" / "qoder-native",
                         dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
+    qoder_connector = ROOT / "connectors" / "qoder"
+    if qoder_connector.is_dir():
+        shutil.copytree(qoder_connector, destination / "connectors" / "qoder",
+                        dirs_exist_ok=True, ignore=shutil.ignore_patterns("__pycache__"))
+    for name in ("QoderDesktop.exe",):
+        source = ROOT / "connectors" / name
+        if source.is_file():
+            target = destination / "connectors" / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, target)
     # The DSH host plugin ships too: without it a DSH chat can only be driven by
     # spawning a process per task, which is exactly what people come here to avoid.
     dsh_host = ROOT / "connectors" / "dsh-host"
@@ -89,7 +100,9 @@ def write_support_files(destination):
     (destination / "python-runtime.txt").write_text("runtime\\python\\python.exe\n", encoding="utf-8")
     native = destination / "connectors" / "qoder-native" / "bridge.local.json"
     if native.parent.is_dir():
-        native.write_text(json.dumps({"state": str(destination / "data"), "agent": "*"}, ensure_ascii=False),
+        # Resolve from the plugin root at runtime.  An absolute staging path
+        # would stop working as soon as the portable folder or zip is moved.
+        native.write_text(json.dumps({"state": "../../data", "agent": "*"}, ensure_ascii=False),
                           encoding="utf-8")
     config = destination / "config.json"
     if not config.exists():

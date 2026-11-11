@@ -10,6 +10,7 @@ from pathlib import Path
 
 from .broker import label, read_config, serve
 from .client import Client
+from .codex_connection import capture_current_connection, select_connection
 from .config import (ADAPTERS, ConfigError, TRANSPORT_ADAPTERS, adapter_for_transport,
                      convert_raw, default_transport, delete_project, delete_role, find_role,
                      load_raw, normalize_config, project_id, projects_summary,
@@ -26,6 +27,9 @@ from . import __version__ as VERSION
 
 
 def start_desktop_connectors(state, config_path=None):
+    # If this command is running inside Codex, publish its current ephemeral
+    # pipe/runtime before deciding which role connectors can start.
+    capture_current_connection(state)
     path = state / "desktop-bindings.json"
     if not path.exists():
         return
@@ -34,14 +38,19 @@ def start_desktop_connectors(state, config_path=None):
         config = read_config(config_path) if config_path else None
     except ValueError:
         config = None
+    try:
+        Client(state).call("connectors_start")
+    except RuntimeError:
+        pass
     for agent, binding in bindings.items():
         endpoint = config["endpoints"].get(agent) if config else None
         adapter = endpoint["adapter"] if endpoint else ("qoder" if agent == "qoder" else "codex")
         safe = agent.replace(".", "-")
         if adapter == "codex":
-            script, arguments = "desktop_link.py", ["--state", str(state), "--serve", "--agent", agent]
-            if not (state / "codex-desktop.local.json").exists():
-                continue
+            # The broker supervises Codex connector processes so a transport
+            # refresh/shutdown can replace only those processes and wait for
+            # their locks to be released. Qoder keeps its own native lifecycle.
+            continue
         elif adapter == "qoder" and binding.get("transport") != "qoder_native":
             if (state / "qoder-input-disabled").exists() or agent != "qoder":
                 continue
@@ -179,16 +188,28 @@ def _current_client():
     return None, None
 
 
-def _resolve_target_session(state, adapter, session):
+def _require_qoder_native(state):
+    status_path = Path(state) / "qoder-native-status.json"
+    status = _read_json_file(status_path, {}) or {}
+    if not status.get("ready") or time.time() * 1000 - status.get("updated_at", 0) > 15000:
+        raise ValueError(
+            "qoder_native_offline: the native connector is not reporting to this Hub; "
+            "restart Qoder after installing or repairing the Agents Chat connector")
+
+
+def _resolve_target_session(state, adapter, session, transport=None):
+    if transport == "qoder_native":
+        # An explicit session id proves only that a chat once existed.  Require
+        # the native extension heartbeat as well so join/takeover cannot report
+        # success for a binding that has no live delivery path.
+        _require_qoder_native(state)
     if not session and adapter == "codex":
         session = os.environ.get("CODEX_THREAD_ID")
     elif not session and adapter == "dsh":
         session = os.environ.get("DSH_SESSION_ID") or os.environ.get("AGENTS_CHAT_SESSION")
     elif not session and adapter == "qoder":
-        status_path = Path(state) / "qoder-native-status.json"
-        status = _read_json_file(status_path, {}) or {}
-        if not status.get("ready") or time.time() * 1000 - status.get("updated_at", 0) > 15000:
-            raise ValueError("qoder_native_offline: start Qoder through the Agents Chat native entry first")
+        if transport in (None, "qoder_native"):
+            _require_qoder_native(state)
         from qoder_desktop_link import ui
         session = ui("inspect").get("session_id")
     if not session:
@@ -200,8 +221,10 @@ def _resolve_target_session(state, adapter, session):
 def _activate_target_client(state, config, adapter):
     """Start the connector that can serve the migrated role, when configured."""
     warning = None
-    if adapter == "codex" and not (Path(state) / "codex-desktop.local.json").is_file():
-        return "codex_connector_context_missing: prepare it once from a management chat"
+    if adapter == "codex":
+        capture_current_connection(state)
+        if not select_connection(state):
+            return "codex_connector_context_missing: register from a live Codex desktop chat"
     if adapter in ("codex", "qoder"):
         try:
             start_desktop_connectors(Path(state), config)
@@ -213,9 +236,10 @@ def _activate_target_client(state, config, adapter):
 def _check_codex_origin(state, adapter, session):
     if adapter != "codex":
         return
-    connection = _read_json_file(Path(state) / "codex-desktop.local.json", {}) or {}
-    if connection.get("origin_thread") == session:
-        raise ValueError("cannot_bind_connector_origin_chat: use a different target chat")
+    capture_current_connection(state)
+    if select_connection(state, session) is None:
+        raise ValueError("cannot_bind_connector_origin_chat: register another live Codex chat "
+                         "from the current app generation so it can deliver to this target")
 
 
 def _migrated_endpoint(endpoint, target_adapter, command=None, args=None):
@@ -451,7 +475,7 @@ def migrate_and_takeover(state, config, project, role, session=None, transport=N
     if not session and current_session:
         session = current_session
     if not transport:
-        raise ValueError("transport_required: pass --transport (codex_app_tools, qoder_native, dsh_plugin)")
+        raise ValueError("transport_required: pass --transport (codex_app_tools, qoder_native, opencode_native, dsh_plugin)")
     derived = adapter_for_transport(transport)
     if derived is None:
         raise ValueError("unsupported_desktop_transport: " + str(transport))
@@ -464,7 +488,7 @@ def migrate_and_takeover(state, config, project, role, session=None, transport=N
     if current_transport and session and session == current_session and transport != current_transport:
         raise ValueError("adapter_transport_mismatch: the current client uses transport="
                          + current_transport + ", not " + str(transport))
-    session = _resolve_target_session(state, target_adapter, session)
+    session = _resolve_target_session(state, target_adapter, session, transport)
     _check_codex_origin(state, target_adapter, session)
 
     if target_adapter == current_adapter:
@@ -573,7 +597,7 @@ def takeover_role(state, config, project, role, session=None, transport=None,
     if not session and current_session:
         session = current_session
     if not transport:
-        raise ValueError("transport_required: pass --transport (codex_app_tools, qoder_native, dsh_plugin)")
+        raise ValueError("transport_required: pass --transport (codex_app_tools, qoder_native, opencode_native, dsh_plugin)")
     derived = adapter_for_transport(transport)
     if derived is None:
         raise ValueError("unsupported_desktop_transport: " + str(transport))
@@ -592,7 +616,7 @@ def takeover_role(state, config, project, role, session=None, transport=None,
             + "; use `session migrate-and-takeover --role " + endpoint["role"]
             + " --adapter auto --transport " + str(transport)
             + "` so the adapter moves with the client")
-    session = _resolve_target_session(state, endpoint["adapter"], session)
+    session = _resolve_target_session(state, endpoint["adapter"], session, transport)
     _check_codex_origin(state, endpoint["adapter"], session)
     result = client.call("session_takeover", agent=internal, project=project,
                          session_id=session, transport=transport)
@@ -617,7 +641,7 @@ def doctor(config):
     for name, endpoint in data["endpoints"].items():
         entry = {"name": name, "address": name, "project": endpoint.get("project"),
                  "role": endpoint.get("role"), "adapter": endpoint["adapter"], "cwd": endpoint["cwd"],
-                 "mode": "independent_cli_task", "desktop_wakeup": False}
+                 "mode": endpoint.get("mode", "independent_cli_task"), "desktop_wakeup": False}
         if endpoint["adapter"] == "fixture":
             entry.update(available=True, version="test fixture; no AI model")
         else:
@@ -690,7 +714,7 @@ def join_role(state, config, project, role, session=None, transport=None,
             + " cannot be joined with transport=" + str(transport)
             + "; rerun with --migrate-adapter (or use session migrate-and-takeover)"
             + " so the adapter moves with the client")
-    session = _resolve_target_session(state, role_adapter, session)
+    session = _resolve_target_session(state, role_adapter, session, transport)
     _check_codex_origin(state, role_adapter, session)
     client = client or Client(state)
     result = client.call("desktop_bind", agent=internal, project=project,
@@ -701,9 +725,9 @@ def join_role(state, config, project, role, session=None, transport=None,
         raise ValueError("join_postconditions_failed: " + compact(postconditions["checks"]))
     warning = None
     if role_adapter == "codex":
-        connection_path = state / "codex-desktop.local.json"
-        if not connection_path.exists():
-            warning = "codex_connector_context_missing: prepare it once from a management chat"
+        capture_current_connection(state)
+        if not select_connection(state, session):
+            warning = "codex_connector_context_missing: register another live Codex desktop chat"
         else:
             start_desktop_connectors(state, config)
     return {"joined": True, "address": internal, "session_id": session,
@@ -835,6 +859,8 @@ def parser():
     s = sub.add_parser("mcp")
     _project_option(s)
     s.add_argument("--agent", "--role", dest="agent", required=True)
+    s.add_argument("--transport", choices=("mcp", "workbuddy_mcp", "opencode_native"), default="mcp",
+                   help="Session transport injected when bridge_register is called")
     s = sub.add_parser("native-result")
     s.add_argument("task_id")
     s.add_argument("--receipt", required=True)
@@ -911,7 +937,7 @@ def parser():
     add = role_sub.add_parser("add")
     _project_option(add)
     add.add_argument("--role", required=True)
-    add.add_argument("--adapter", default="codex", choices=("codex", "qoder", "codebuddy", "dsh", "fixture"))
+    add.add_argument("--adapter", default="codex", choices=ADAPTERS)
     add.add_argument("--cwd")
     add.add_argument("--description", default="")
     add.add_argument("--peer", action="append", default=[])
@@ -943,12 +969,33 @@ def parser():
     s.add_argument("--name")
     s.add_argument("--description", default="")
     s.add_argument("--role", action="append", default=[], help="role[:adapter[:description]], repeatable")
-    s.add_argument("--adapter", default="codex", choices=("codex", "qoder", "codebuddy", "dsh", "fixture"))
+    s.add_argument("--adapter", default="codex", choices=ADAPTERS)
     s.add_argument("--force", action="store_true", help="Replace existing role runtime settings")
     s.add_argument("--no-agents", action="store_true")
     s.add_argument("--no-agent-chat", action="store_true",
                    help="Do not initialize the bundled agent-chat file bus")
     s.add_argument("--no-restart", action="store_true")
+    workbuddy = sub.add_parser("workbuddy", help="Connect WorkBuddy to Agents Chat over local MCP")
+    workbuddy_sub = workbuddy.add_subparsers(dest="workbuddy_command", required=True)
+    workbuddy_setup = workbuddy_sub.add_parser("setup")
+    _project_option(workbuddy_setup)
+    workbuddy_setup.add_argument("--role", default="workbuddy")
+    workbuddy_setup.add_argument("--description", default="WorkBuddy collaboration role")
+    workbuddy_setup.add_argument("--mcp-config", help="WorkBuddy mcp.json (default: ~/.workbuddy/mcp.json)")
+    workbuddy_setup.add_argument("--server-name")
+    workbuddy_setup.add_argument("--no-restart", action="store_true")
+    workbuddy_status_parser = workbuddy_sub.add_parser("status")
+    workbuddy_status_parser.add_argument("--mcp-config")
+    opencode = sub.add_parser("opencode", help="Connect OpenCode's current native session to Agents Chat")
+    opencode_sub = opencode.add_subparsers(dest="opencode_command", required=True)
+    opencode_setup = opencode_sub.add_parser("setup")
+    _project_option(opencode_setup)
+    opencode_setup.add_argument("--role", default="opencode")
+    opencode_setup.add_argument("--description", default="OpenCode collaboration role")
+    opencode_setup.add_argument("--server-name")
+    opencode_setup.add_argument("--no-restart", action="store_true")
+    opencode_status_parser = opencode_sub.add_parser("status")
+    opencode_status_parser.add_argument("--root")
     return p
 
 
@@ -1002,7 +1049,7 @@ def main():
                     project = resolved["endpoints"][internal]["project"]
                 except ValueError:
                     project = None
-            serve_mcp(client, label(args.agent), project)
+            serve_mcp(client, label(args.agent), project, args.transport)
             return
         elif args.command == "send":
             prompt = _prompt_from_args(args)
@@ -1081,12 +1128,100 @@ def main():
                                    write_agents=not args.no_agents, force=args.force,
                                    with_agent_chat=not args.no_agent_chat)
             result.update(live_restart_if_running(state, config, not args.no_restart))
+        elif args.command == "workbuddy":
+            result = workbuddy_command(args, config, state, project)
+        elif args.command == "opencode":
+            result = opencode_command(args, config, state, project)
         else:
             raise ValueError("unknown_command")
         print(compact(result))
     except (RuntimeError, ValueError, OSError, KeyError) as exc:
         print(compact({"error": str(exc)}), file=sys.stderr)
         raise SystemExit(1)
+
+
+def workbuddy_command(args, config, state, project):
+    from .workbuddy import install_workbuddy_mcp, workbuddy_status
+    if args.workbuddy_command == "status":
+        result = workbuddy_status(args.mcp_config)
+        normalized = read_config(config)
+        result["roles"] = [address for address, endpoint in normalized["endpoints"].items()
+                           if endpoint["adapter"] in ("workbuddy", "codebuddy")]
+        return result
+    normalized = read_config(config)
+    if not project:
+        if "default" in normalized["projects"]:
+            project = "default"
+        elif len(normalized["projects"]) == 1:
+            project = next(iter(normalized["projects"]))
+        else:
+            raise ValueError("project_required: pass --project for the WorkBuddy role")
+    project_entry = normalized["projects"].get(project)
+    if not project_entry:
+        raise ValueError("unknown_project: " + project)
+    address = project_entry["roles"].get(args.role)
+    role_created = False
+    if address:
+        adapter = normalized["endpoints"][address]["adapter"]
+        if adapter not in ("workbuddy", "codebuddy"):
+            raise ValueError(f"role_adapter_conflict: {address} uses {adapter}")
+    else:
+        added = add_project_role(config, project, args.role, "workbuddy",
+                                 description=args.description)
+        address = added["address"]
+        role_created = True
+    installed = install_workbuddy_mcp(cli_command(), state, config, project, args.role,
+                                      path=args.mcp_config, server_name=args.server_name)
+    result = {"project": project, "role": args.role, "address": address,
+              "role_created": role_created, "mcp": installed}
+    if role_created:
+        result.update(live_restart_if_running(state, config, not args.no_restart))
+    else:
+        result["hub"] = "unchanged"
+    return result
+
+
+def opencode_command(args, config, state, project):
+    from .opencode import install_opencode_mcp, opencode_status
+    if args.opencode_command == "status":
+        result = opencode_status(args.root)
+        normalized = read_config(config)
+        result["roles"] = [address for address, endpoint in normalized["endpoints"].items()
+                           if endpoint["adapter"] == "opencode"]
+        return result
+    normalized = read_config(config)
+    if not project:
+        if "default" in normalized["projects"]:
+            project = "default"
+        elif len(normalized["projects"]) == 1:
+            project = next(iter(normalized["projects"]))
+        else:
+            raise ValueError("project_required: pass --project for the OpenCode role")
+    project_entry = normalized["projects"].get(project)
+    if not project_entry:
+        raise ValueError("unknown_project: " + project)
+    address = project_entry["roles"].get(args.role)
+    role_created = False
+    if address:
+        adapter = normalized["endpoints"][address]["adapter"]
+        if adapter != "opencode":
+            raise ValueError(f"role_adapter_conflict: {address} uses {adapter}")
+    else:
+        added = add_project_role(config, project, args.role, "opencode",
+                                 description=args.description)
+        address = added["address"]
+        role_created = True
+    installed = install_opencode_mcp(
+        cli_command(), state, config, project, args.role, project_entry["root"],
+        server_name=args.server_name)
+    result = {"project": project, "role": args.role, "address": address,
+              "role_created": role_created, "mode": "desktop_session",
+              "mcp": installed}
+    if role_created:
+        result.update(live_restart_if_running(state, config, not args.no_restart))
+    else:
+        result["hub"] = "unchanged"
+    return result
 
 
 def project_command(args, config, state):
