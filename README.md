@@ -234,6 +234,7 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 - **OpenCode**：官方 MCP 提供当前真实 session ID，`opencode_native` 连接器用官方 CLI 把任务投进这个会话；无需 OAuth、审核或手工 pull。
 - **WorkBuddy**：本地 stdio MCP 拉取模式；运行 `workbuddy setup --project <项目>` 后，新聊天可领取任务、回传结果并给其他角色派活。
 - **Trae（暂不支持）**：Trae 支持 MCP、Skill 与 VSIX，但当前没有公开接口可定位真实聊天、向指定既有聊天主动投递消息并观察本轮完成；只能做需要聊天主动领取任务的 `mcp_pull`，体验不符合桌面聊天绑定目标，因此暂不提供 adapter、setup 或伪装成原生唤醒。
+- **Claude Desktop / Claude Code（已调查、暂不支持）**：Windows Desktop 的本地 Code 会话会暴露 `local_...` 宿主 ID、底层 Claude Code session ID 与在线状态，但公开 CLI 的 `--desktop --resume` 只能定位会话，不能携带 prompt；非交互 `--resume --print` 又使用独立 CLI 的登录态与 provider，不能复用 Desktop 会话的宿主认证。Desktop 内部虽有跨会话 `send_message`，目前没有公开给外部程序的调用入口。Agents Chat 因此不提供 `claude_native`、setup 或 UI 自动化伪装；本地 MCP 只能让 Claude 会话主动调用工具，不等于外部唤醒指定会话。
 - **DSH**：由宿主插件自动绑定，不需要 `join`。
 - 绑定是显式路由；绑定角色有排队/执行中任务时拒绝改绑，不会静默退回 CLI。
 
