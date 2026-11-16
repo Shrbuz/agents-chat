@@ -6,24 +6,67 @@ installation configuration.  Every Codex-side register/join/heartbeat can add
 the context it currently sees; connectors always select the newest app
 generation and never fall back to an older pipe after a restart.
 """
+import contextlib
 import hashlib
 import json
 import os
 from pathlib import Path
+import tempfile
 import time
 
 
 REGISTRY_NAME = "codex-connections.local.json"
 LEGACY_NAME = "codex-desktop.local.json"
+LOCK_NAME = "codex-connections.lock"
 
 
 def _atomic_json(path, value):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n",
-                         encoding="utf-8")
-    os.replace(temporary, path)
+    fd, temporary = tempfile.mkstemp(prefix=".codex-connections-", suffix=".tmp",
+                                     dir=path.parent)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as handle:
+            json.dump(value, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+@contextlib.contextmanager
+def _registry_lock(state, timeout=10):
+    """Serialize registry read-modify-write across desktop chat processes."""
+    path = Path(state) / LOCK_NAME
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a+b") as handle:
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                if os.name == "nt":
+                    import msvcrt
+                    handle.seek(0)
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("codex_connection_registry_busy")
+                time.sleep(0.02)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                handle.seek(0)
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _connection_id(pipe, command):
@@ -124,18 +167,19 @@ def update_connection(state, connection):
     """Record one observed origin and return whether the app generation changed."""
     state = Path(state)
     item = normalize_connection(connection)
-    registry = load_registry(state)
-    previous_id = registry.get("active_connection_id")
-    registry["active_connection_id"] = item["connection_id"]
-    registry["connections"][item["origin_thread"]] = item
-    # Bound growth: contexts from old chats are only useful within the newest
-    # few app observations, and each one contains a sensitive local pipe name.
-    ordered = sorted(registry["connections"].items(),
-                     key=lambda pair: float((pair[1] or {}).get("updated_at") or 0),
-                     reverse=True)[:16]
-    registry["connections"] = dict(ordered)
-    _atomic_json(state / REGISTRY_NAME, registry)
-    _atomic_json(state / LEGACY_NAME, item)
+    with _registry_lock(state):
+        registry = load_registry(state)
+        previous_id = registry.get("active_connection_id")
+        registry["active_connection_id"] = item["connection_id"]
+        registry["connections"][item["origin_thread"]] = item
+        # Bound growth: contexts from old chats are only useful within the newest
+        # few app observations, and each one contains a sensitive local pipe name.
+        ordered = sorted(registry["connections"].items(),
+                         key=lambda pair: float((pair[1] or {}).get("updated_at") or 0),
+                         reverse=True)[:16]
+        registry["connections"] = dict(ordered)
+        _atomic_json(state / REGISTRY_NAME, registry)
+        _atomic_json(state / LEGACY_NAME, item)
     return {"connection": item, "generation_changed": previous_id != item["connection_id"],
             "previous_connection_id": previous_id}
 

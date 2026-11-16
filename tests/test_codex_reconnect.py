@@ -2,12 +2,13 @@
 import json
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
 
 from bridge.broker import Broker
-from bridge.codex_connection import update_connection
+from bridge.codex_connection import load_registry, update_connection
 
 
 class CodexReconnectTests(unittest.TestCase):
@@ -82,6 +83,30 @@ class CodexReconnectTests(unittest.TestCase):
         self.assertTrue(after["transports"]["codex_app_tools"]["ok"])
         self.assertEqual(after["transports"]["codex_app_tools"]["consecutive_failures"], 0)
         self.assertIsNotNone(after["transports"]["codex_app_tools"]["last_success_at"])
+
+    def test_concurrent_connection_updates_are_serialized(self):
+        barrier = threading.Barrier(8)
+        errors = []
+
+        def record(index):
+            try:
+                connection = self.connection(
+                    r"\\.\pipe\codex-app-tools-shared", self.node_a,
+                    f"management-{index}")
+                barrier.wait()
+                update_connection(self.state, connection)
+            except Exception as error:  # test collects worker failures in the main thread
+                errors.append(error)
+
+        workers = [threading.Thread(target=record, args=(index,)) for index in range(8)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+
+        self.assertEqual(errors, [])
+        self.assertEqual(set(load_registry(self.state)["connections"]),
+                         {f"management-{index}" for index in range(8)})
 
     def test_deleted_runtime_degrades_health_immediately_and_role_is_not_online(self):
         connection = self.connection(r"\\.\pipe\codex-app-tools-A", self.node_a, "management")
