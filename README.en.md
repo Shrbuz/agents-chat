@@ -18,7 +18,7 @@ Let several agent chats on one machine hand work to each other, return results a
 
 - [Quick start](#quick-start)
 - [Core concepts](#core-concepts)
-- [Two collaboration modes](#two-collaboration-modes)
+- [Three collaboration profiles and two delivery paths](#three-collaboration-profiles-and-two-delivery-paths)
 - [File bus](#file-bus)
 - [DSH integration](#dsh-integration)
 - [Desktop chat bindings](#desktop-chat-bindings)
@@ -100,16 +100,37 @@ There is no central dispatcher agent. Each session decides what to hand to whom 
 
 ---
 
-## Two collaboration modes
+## Three collaboration profiles and two delivery paths
 
-One request always follows one path; there is no "two systems" for the user to arbitrate:
+Projects default to `standard`, with an explicit per-task override. Profiles control ceremony; they are not three message systems:
+
+| Profile | Use it for | Lifecycle |
+| --- | --- | --- |
+| `fast` | small, local, low-risk issues | one owner closes the loop; one `send --mode fast` is allowed for a real dependency, with no claim/verify chain |
+| `standard` | ordinary cross-role development | hand off only real dependencies; reuse one durable task for rework; an immediate result may skip claim, then the requester verifies |
+| `strict` | release, production, access, security, payment or migration work | full request/claim/result/verify with a lease and independent evidence review |
+
+```powershell
+& $cli project mode --id alpha --mode fast
+& $cli setup --root E:\work\alpha --project alpha --collaboration-mode standard `
+    --role backend --role frontend
+```
+
+One request still follows exactly one underlying delivery path:
 
 | Does the project have an `agent_chat/` bus? | How work is dispatched | What the hub does |
 | --- | --- | --- |
-| Yes | File bus (`claim` / `result` / `verify`) | Wakes the role's session when a new event arrives |
-| No | Hub queue (`send` / `wait`) | Delivers straight to the target role |
+| Yes | `standard` / `strict` use the file bus; `fast` uses one direct send | Wakes the role's session for new bus events |
+| No | Hub queue (`send` / `wait`); it cannot pretend to provide `strict` audit | Delivers straight to the target role |
 
-The skill detects which case applies and picks one without asking the user.
+The bus rejects `fast` requests with a direct-send hint, and the queue rejects `strict` work with a durable-bus hint. The profiles therefore affect execution rather than being documentation-only labels.
+
+`status` and `show` also return `coordination_wait_seconds`,
+`coordination_waiting_for`, `coordination_budget_seconds`, and
+`coordination_over_budget`. The clock counts pickup, requester verification, and
+rework handoff waits, but excludes actual claimed execution time. The default
+wait budgets are 120 seconds for `standard`, 900 seconds for `strict`, and zero
+for `fast`, which never enters the durable task chain.
 
 ### A notification is not a cancellable execution
 
@@ -138,7 +159,7 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 
 # dispatch
 & $cli --project alpha bus request --from backend --to frontend --session be-1 `
-    --title "Login API" --body "details" --acceptance "returns 200" --priority P1
+    --title "Login API" --body "details" --acceptance "returns 200" --priority P1 --mode standard
 
 # claim (returns a lease token)
 & $cli --project alpha bus claim <task-id> --role frontend --session fe-1
@@ -147,6 +168,7 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 & $cli --project alpha bus mark-read-through-sequence --role frontend --session fe-1 <sequence>
 
 # report and verify
+# a standard immediate result may omit claim/token; claimed or strict work requires the token
 & $cli --project alpha bus result <task-id> --role frontend --session fe-1 --token <token> `
     --body "done" --evidence "tests pass"
 & $cli --project alpha bus verify <task-id> --role backend --session be-1 --outcome pass --body "rechecked"
@@ -198,6 +220,7 @@ Messages that cannot be read are **skipped and recorded**; everything else keeps
 ### Rules in brief
 
 - State machine: `pending → in_progress → resolved → closed`; `verify --outcome fail` returns the task to `pending`.
+- `standard` may report one result directly from `pending`; `strict` must claim first; `fast` never enters the file bus.
 - The lease is 30 minutes by default; desktop sessions are renewed by the hub, and a late result from the same session is still accepted after expiry.
 - Requests must carry `--acceptance`, results must carry `--evidence`; the inbox tracks read state per role-and-session.
 - Write messages with the CLI or the skill script, never by hand — `<seq:08d>_<message_id>.json` is the easiest thing to get wrong.

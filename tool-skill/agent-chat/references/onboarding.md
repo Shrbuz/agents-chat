@@ -23,9 +23,14 @@
 或明确授权自行规划后才落盘；已有明确角色列表时直接使用，不反复确认。
 不要把当前配置咨询会话擅自绑定成交付负责人。
 
+同时确认项目默认协作强度：普通项目使用 `standard`；大量小型、本地、低风险
+issue 的项目可用 `fast`；发布、生产、权限、安全、支付或数据迁移为主的项目
+使用 `strict`。模式不是角色数量：fast 更不应把每个小步骤拆成独立角色。
+
 ## 初始化与会话开场指令
 
-1. 使用 [commands.md](commands.md) 的 `init --roles` 或 `--roles-file`。
+1. 使用 [commands.md](commands.md) 的 `init --roles` 或 `--roles-file`，并用
+   `--collaboration-mode fast|standard|strict` 保存项目默认模式。
    为确认的角色生成 `<role>_msg` 目录，roles 是唯一的有效路由名单，
    role_descriptions 记录职责。未指定 roles 的 CLI 仍保留四角色默认值，
    只是兼容旧用法，不表示角色分析可以省略。

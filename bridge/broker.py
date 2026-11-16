@@ -19,6 +19,7 @@ from .store import Store, TERMINAL, compact
 from .desktop_transport import DesktopHub
 from .agentchat_bridge import AgentChatBridge
 from .codex_connection import select_connection, update_connection
+from .collaboration import collaboration_mode, project_mode
 from .config import (ConfigError, adapter_for_transport, allowed_target, find_role, label,
                      normalize_config, projects_summary, read_config, session_id as config_session_id,
                      transport_supported)
@@ -743,6 +744,7 @@ class Broker:
                                "role": endpoint.get("role"), "adapter": endpoint["adapter"],
                                "enabled": endpoint.get("enabled", True), "description": endpoint.get("description", ""),
                                "peers": endpoint.get("peers", []), "mode": self.target_mode(name),
+                               "collaboration_mode": project_mode(self.config, endpoint["project"]),
                                "desktop_wakeup": name in self.desktop.bindings and not self.desktop_input_disabled(name),
                                "desktop_input_enabled": endpoint.get("desktop_input_enabled", True),
                                "desktop_transport": self.desktop.bindings.get(name, {}).get("transport"),
@@ -976,7 +978,9 @@ class Broker:
                                               endpoint["adapter"], transport, description, metadata)
             return {"session": row, "address": internal, "role": {"role": endpoint["role"],
                     "description": endpoint.get("description", ""), "peers": endpoint.get("peers", []),
-                    "mode": self.target_mode(internal)}, "connection_refresh": connection_refresh}
+                    "mode": self.target_mode(internal),
+                    "collaboration_mode": project_mode(self.config, endpoint["project"])},
+                    "connection_refresh": connection_refresh}
         if method == "session_heartbeat":
             return {"session": self.store.heartbeat_session(config_session_id(p.get("session"))),
                     "connection_refresh": connection_refresh}
@@ -990,12 +994,15 @@ class Broker:
                 raise ValueError("broker_stopping")
             allowed = {"sender", "target", "prompt", "key", "timeout", "context", "reply_mode",
                        "queue_ttl", "project", "interrupt_on_timeout", "delivery_timeout", "kind"}
+            allowed.add("collaboration_mode")
             if set(p) - allowed:
                 raise ValueError("unknown_send_fields")
             project = p.get("project")
             sender = self.resolve(label(p["sender"]), project, required=False)
             target = self.resolve(label(p["target"]), project, required=True)
             target_endpoint = self.endpoints[target]
+            mode = collaboration_mode(
+                p.get("collaboration_mode") or project_mode(self.config, target_endpoint["project"]))
             if not target_endpoint.get("enabled", True):
                 raise ValueError("target_unavailable")
             if self.binding_mismatch(target):
@@ -1022,6 +1029,10 @@ class Broker:
             kind = p.get("kind")
             if kind not in (None, "agent_chat_wakeup"):
                 raise ValueError("unknown_task_kind")
+            if mode == "strict" and kind != "agent_chat_wakeup":
+                raise ValueError(
+                    "strict_mode_uses_bus: create a durable bus request with acceptance criteria, "
+                    "lease, evidence and explicit verification")
             interrupt = p.get("interrupt_on_timeout", False)
             if type(interrupt) is not bool:
                 raise ValueError("interrupt_on_timeout_must_be_boolean")
@@ -1045,6 +1056,7 @@ class Broker:
                 normalized.append(str(path))
             payload = {"prompt": prompt, "timeout": timeout, "context": normalized,
                        "reply_mode": reply, "queue_ttl": queue_ttl,
+                       "collaboration_mode": mode,
                        "interrupt_on_timeout": interrupt, "delivery_timeout": delivery_timeout,
                        "sender_address": sender, "target_address": target}
             if kind == "agent_chat_wakeup":
@@ -1055,6 +1067,7 @@ class Broker:
                 self.cv.notify_all()
             return {"task_id": task_id, "duplicate": duplicate, "state": self.store.get(task_id)["state"],
                     "sender": sender, "target": target, "mode": self.target_mode(target),
+                    "collaboration_mode": mode,
                     "kind": kind, "delivery_timeout": delivery_timeout,
                     "interrupt_on_timeout": interrupt}
         if method == "pull":

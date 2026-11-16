@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 
 from bridge.bus import Bus
 
@@ -14,12 +15,13 @@ PROJECT_ID = "11111111-1111-1111-1111-111111111111"
 VOLATILE = ("token", "expires_at", "created_at", "updated_at", "message_id", "sequence")
 
 
-def make_bus(root):
+def make_bus(root, mode="standard"):
     root = Path(root)
     root.mkdir(parents=True, exist_ok=True)
     (root / "project.json").write_text(json.dumps({
         "schema_version": 1,
         "project_id": PROJECT_ID,
+        "collaboration_mode": mode,
         "roles": {"frontend": "frontend_msg", "backend": "backend_msg"},
     }), encoding="utf-8")
     return Bus(root)
@@ -179,6 +181,21 @@ class LifecycleTests(unittest.TestCase):
                        message_id="22222222-2222-2222-2222-222222222222",
                        data={"title": "别的", "body": "别的", "acceptance": ["x"]})
 
+    def test_pre_mode_request_retry_stays_idempotent_after_upgrade(self):
+        first = request(self.bus)
+        path = next((Path(self.tmp.name) / "bus/backend_msg").glob("*.json"))
+        event = json.loads(path.read_text(encoding="utf-8"))
+        event["data"].pop("collaboration_mode", None)
+        event["intent"]["data"].pop("collaboration_mode", None)
+        path.write_text(json.dumps(event, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        manifest_path = Path(self.tmp.name) / "bus/project.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["collaboration_mode"] = "fast"
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        again = request(Bus(Path(self.tmp.name) / "bus"))
+        self.assertTrue(again["duplicate"])
+        self.assertEqual(again["event"]["message_id"], first["event"]["message_id"])
+
     def test_request_requires_acceptance_and_priority(self):
         bus = self.bus
         with self.assertRaises(ValueError):
@@ -187,6 +204,71 @@ class LifecycleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             bus.submit("request", "frontend", "fe-1", recipient="backend",
                        data={"title": "t", "body": "b", "acceptance": ["x"], "priority": "P9"})
+
+    def test_standard_allows_an_immediate_result_without_claim(self):
+        task_id = request(self.bus)["task"]["task_id"]
+        reported = self.bus.submit(
+            "result", "backend", "be-1", task_id=task_id,
+            data={"body": "small fix complete", "evidence": ["syntax check passed"]})
+        self.assertEqual(reported["task"]["status"], "resolved")
+        self.assertEqual(reported["task"]["collaboration_mode"], "standard")
+
+    def test_fast_rejects_file_bus_ceremony(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            fast = make_bus(Path(tmp) / "bus", mode="fast")
+            with self.assertRaisesRegex(ValueError, "direct_send"):
+                request(fast)
+
+    def test_strict_requires_claim_before_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            strict = make_bus(Path(tmp) / "bus", mode="strict")
+            task_id = request(strict)["task"]["task_id"]
+            with self.assertRaisesRegex(ValueError, "Claim is missing"):
+                strict.submit("result", "backend", "be-1", task_id=task_id,
+                              data={"body": "done", "evidence": ["test"]})
+            claimed = strict.submit("claim", "backend", "be-1", task_id=task_id)
+            reported = strict.submit(
+                "result", "backend", "be-1", task_id=task_id,
+                token=claimed["event"]["data"]["token"],
+                data={"body": "done", "evidence": ["test"]})
+            self.assertEqual(reported["task"]["status"], "resolved")
+
+    def test_coordination_metrics_exclude_claimed_execution_time(self):
+        task_id = request(self.bus)["task"]["task_id"]
+        claimed = self.bus.submit("claim", "backend", "be-1", task_id=task_id)
+        self.bus.submit(
+            "result", "backend", "be-1", task_id=task_id,
+            token=claimed["event"]["data"]["token"],
+            data={"body": "done", "evidence": ["test"]})
+        self.bus.submit(
+            "verify", "frontend", "fe-1", task_id=task_id,
+            data={"outcome": "pass", "body": "verified"})
+        events, tasks = self.bus.load()
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        event_times = {
+            "request": start,
+            "claim": start + timedelta(seconds=15),
+            "result": start + timedelta(seconds=300),
+            "verify": start + timedelta(seconds=320),
+        }
+        for event in events:
+            event["created_at"] = event_times[event["type"]].isoformat()
+        metrics = self.bus._coordination_metrics(events, tasks[task_id])
+        self.assertEqual(metrics["coordination_wait_seconds"], 35)
+        self.assertEqual(metrics["coordination_budget_seconds"], 120)
+        self.assertFalse(metrics["coordination_over_budget"])
+
+    def test_pending_standard_task_reports_coordination_budget_overrun(self):
+        task_id = request(self.bus)["task"]["task_id"]
+        events, tasks = self.bus.load()
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        events[0]["created_at"] = start.isoformat()
+        metrics = self.bus._coordination_metrics(
+            events, tasks[task_id], now=start + timedelta(seconds=121))
+        self.assertEqual(metrics["coordination_waiting_for"], "assignee")
+        self.assertEqual(metrics["coordination_wait_seconds"], 121)
+        self.assertEqual(metrics["coordination_budget_seconds"], 120)
+        self.assertTrue(metrics["coordination_over_budget"])
 
 
 class DamageTests(unittest.TestCase):

@@ -19,6 +19,26 @@ role_descriptions、项目入口和用户指派为依据。角色建议与初始
 ops 发给 tester，因此生产验收还应遵守 tester 的验收报告，不能仅凭部署
 成功声明交付通过。
 
+## 协作强度
+
+项目 `collaboration_mode` 默认为 `standard`，任务可显式升级或覆盖：
+
+- `fast`：小型、局部、低风险工作由一个 owner 直接闭环；需要独有能力时
+  使用 Hub 的一次 `send --mode fast`。文件总线拒绝 fast 请求，避免产生
+  claim/result/verify 仪式链。
+- `standard`：只把真实依赖交给另一个角色，并在同一 task_id 上返修。立即
+  完成的任务可从 pending 直接 result；需要进度、阻塞或换人时先 claim。
+- `strict`：发布、生产、权限、安全、支付、数据迁移等高风险工作，必须
+  request → claim → result → verify，并由请求方独立核对证据。
+
+模式和投递路径是两件事：fast 使用中枢直发；standard/strict 在项目已配置
+总线时使用文件总线。不得把 strict 静默降成普通直发。
+
+`status` / `show` 会报告协调等待秒数、当前等待方、模式预算和是否超标。
+等待领取、等待验收及返工后再等待属于协调开销，claim 到 result 的实际实现
+时间不属于协调开销。standard 默认预算 120 秒，strict 默认预算 900 秒；
+fast 不进入持久任务链，预算为 0。
+
 ## 文件与一致性
 
 每条消息是接收方目录下独立的 UTF-8 JSON 文件，命名为
@@ -51,7 +71,7 @@ OS 锁；不得手动删除正在使用的锁文件。消息只新增，不改�
 
 ```text
 request → pending
-claim   → in_progress（同时向请求方发送接收回执）
+claim   → in_progress（strict 必须；standard 长任务使用）
 progress / renew → in_progress
 blocked → blocked（释放领取；明确依赖）
 result  → resolved（释放领取，等待请求方验收）
@@ -65,6 +85,8 @@ cancel → cancelled（仅请求方取消未终结任务）
 `lease_expired`；另一会话可以领取并取得新令牌。旧令牌即使稍后回报也会
 被拒绝。文件令牌只能约束通信工具，不能回滚已执行的代码编辑或部署，
 所以接手者必须先核对真实状态，执行有副作用的步骤前须确认有效领取。
+standard 的 assignee 可在 pending 且未被领取时直接提交一次 result；一旦
+存在 claim、任务曾 blocked，或模式为 strict，仍须使用有效 token。
 
 发送结果前应关联具体代码/部署版本、验证命令和结果、截图或报告路径。
 遇到问题保留失败记录；重试前检查是否已有实际副作用。优先级允许
@@ -76,6 +98,7 @@ P0/P1/P2/P3，deadline 超时会在 status 中显示。
 附加环境、变更提交、release_id、前后端实际版本、URL、依赖任务 ID。
 问题反馈包含复现步骤、预期和实际结果；依赖另一个角色时发送独立请求，
 在原任务中记录关联任务 ID。禁止把真实口令、短信验证码、密钥写入消息。
+请求会保存 `collaboration_mode`，缺省继承项目默认值；fast 请求不会写入总线。
 
 结果必须包含正文和非空 evidence 数组；证据可以是命令结果、报告路径
 或截图路径。验收请求方确实核查后才调用 verify，不能把对方自述当作

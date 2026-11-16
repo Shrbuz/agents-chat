@@ -17,6 +17,7 @@ def namespace(**values):
         "priority": "P2", "due_at": None, "data_file": None, "sender_role": None,
         "target_role": None, "title": None, "limit": 50, "message_id": [],
         "outcome": None, "all": False, "sequence": None,
+        "mode": None,
     }
     defaults.update(values)
     return argparse.Namespace(**defaults)
@@ -117,6 +118,21 @@ class BusCliTests(unittest.TestCase):
             buscli.run(namespace(
                 bus_command="result", role="backend", session="be-1", task_id=task_id,
                 token=token, body="done", evidence=["x"]), self.root)
+
+    def test_cli_standard_result_can_skip_claim(self):
+        task_id = self.request()["task_id"]
+        reported = buscli.run(namespace(
+            bus_command="result", role="backend", session="be-1", task_id=task_id,
+            body="done", evidence=["check passed"]), self.root)
+        self.assertEqual(reported["status"], "resolved")
+        self.assertEqual(reported["collaboration_mode"], "standard")
+
+    def test_cli_fast_request_points_to_direct_send(self):
+        with self.assertRaisesRegex(ValueError, "direct_send"):
+            buscli.run(namespace(
+                bus_command="request", sender_role="frontend", target_role="backend",
+                session="fe-1", title="tiny", body="small fix", acceptance=["done"],
+                mode="fast"), self.root)
 
 
 if __name__ == "__main__":

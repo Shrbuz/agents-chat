@@ -38,6 +38,21 @@
 - `peers` 是可选出站白名单。空列表表示不限制；非空时只允许列出的角色。跨项目目标写完整地址。
 - 配置写入由 CLI 的 `project/role/setup` 完成，校验后再原子替换；运行中的后台通过重启加载。`setup` 幂等，不覆盖已有角色的运行时设置。
 
+### 协作强度策略
+
+传输路径与流程强度分离。项目保存 `collaboration_mode`，任务可以显式覆盖：
+
+- `fast`：单 owner 为默认执行者；唯一真实依赖可通过 Hub queue 直发一次，禁止进入文件总线形成 claim/verify 链。
+- `standard`：文件总线任务由请求方验收；立即完成时 assignee 可从 pending 直接 result，需要进度、阻塞或换人时才 claim。
+- `strict`：必须使用文件总线完整 request/claim/result/verify，适用于生产、发布、安全、权限、支付和数据迁移。
+
+Hub queue 拒绝 strict，文件总线拒绝 fast，避免模式只存在于提示词而没有运行时约束。`project mode` 会同步主配置、项目入口、总线 manifest 与生成的角色提示词，不改角色和历史事件。
+
+总线的 `status` / `show` 把等待领取、等待请求方验收、返工后再等待累计为
+`coordination_wait_seconds`，同时报告当前等待方、模式预算和是否超标；claim 到
+result 的实现耗时不计入协作开销。standard 默认预算 120 秒，strict 900 秒，
+fast 因不建立持久任务链而为 0。
+
 ### 队列、会话和路由
 
 一个 SQLite 仍然保存全局任务/结果/事件，新增 `sessions` 表保存会话存在性：
@@ -51,7 +66,7 @@
 
 ### 自主消息传递
 
-`send` 是唯一的派发入口，结果是自动回传，不需要目标角色再发一条“回复任务”：
+在 Hub queue 路径中，`send` 是唯一的派发入口，结果自动回传，不需要目标角色再发一条“回复任务”：
 
 1. 发起会话调用 `send --to 角色`；
 2. 目标角色的 worker 领取，CLI 角色启动短任务，桌面角色把 prompt 投递到绑定聊天；

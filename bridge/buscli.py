@@ -11,6 +11,7 @@ import json
 from pathlib import Path
 
 from .bus import Bus
+from .collaboration import MODES
 
 
 def _project_option(parser):
@@ -41,6 +42,8 @@ def add_commands(sub):
     request.add_argument("--body", required=True)
     request.add_argument("--acceptance", action="append", default=[])
     request.add_argument("--priority", default="P2", choices=("P0", "P1", "P2", "P3"))
+    request.add_argument("--mode", choices=MODES,
+                         help="Task collaboration mode; fast uses direct `send`, not the file bus")
     request.add_argument("--due-at")
     request.add_argument("--data-file", help="Extra JSON merged into the request data")
 
@@ -73,7 +76,9 @@ def add_commands(sub):
 
     result = bus_sub.add_parser("result", help="Report a result with evidence")
     _project_option(result)
-    _token(result)
+    _role_session(result)
+    result.add_argument("--token",
+                        help="Lease token; optional for an immediate standard-mode result")
     result.add_argument("task_id")
     result.add_argument("--body", required=True)
     result.add_argument("--evidence", action="append", default=[])
@@ -165,6 +170,7 @@ def _summary(outcome):
         "sequence": event["sequence"],
         "message_id": event["message_id"],
         "duplicate": outcome["duplicate"],
+        "collaboration_mode": task.get("collaboration_mode", "standard"),
         "claim_token": (task.get("claim") or {}).get("token"),
     }
 
@@ -178,6 +184,8 @@ def run(args, root):
             "title": args.title, "body": args.body,
             "acceptance": list(args.acceptance), "priority": args.priority,
         }, args.data_file)
+        if getattr(args, "mode", None):
+            data["collaboration_mode"] = args.mode
         if args.due_at:
             data["due_at"] = args.due_at
         return _summary(bus.submit("request", args.sender_role, args.session,

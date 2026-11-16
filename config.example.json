@@ -5,6 +5,7 @@
       "name": "Alpha 项目",
       "root": "E:/work/alpha",
       "description": "示例：一个项目内由两个角色协作",
+      "collaboration_mode": "standard",
       "roles": {
         "backend": {
           "adapter": "codex",
@@ -32,6 +33,7 @@
       "name": "Beta 项目",
       "root": "E:/work/beta",
       "description": "示例：跨项目角色",
+      "collaboration_mode": "strict",
       "roles": {
         "tester": {
           "adapter": "codex",

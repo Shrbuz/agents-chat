@@ -582,8 +582,13 @@ class AgentChatBridge:
         session = self._bus_session(project, bus_role) or f"{bus_role}-1"
         # The action depends on the event: only a request wants a claim, and only
         # a result wants a verify. Saying "领取" for a result is simply wrong.
+        mode = (event.get("data") or {}).get("collaboration_mode", "standard")
+        request_hint = (
+            "请先 claim 领取；strict 任务必须持有效租约，完成后用 result 回传结果。"
+            if mode == "strict" else
+            "standard 小任务可直接处理后 result；需要进度、阻塞或换人时先 claim。")
         hint = {
-            "request": "请用 claim 领取并处理，完成后用 result 回传结果。",
+            "request": request_hint,
             "claim": "对方已领取任务，查看即可。",
             "result": "查看即可；需要确认时用 verify 通过或驳回。",
             "verify_pass": "验收已通过，查看即可。",

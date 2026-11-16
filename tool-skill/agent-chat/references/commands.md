@@ -70,6 +70,11 @@ python CLI --project PROJECT verify --role tester --session tester-UUID --task T
 python CLI --project PROJECT cancel --role tester --session tester-UUID --task TASK_ID --body "需求已撤回"
 ```
 
+`send` 可加 `--mode standard|strict`。`fast` 不写文件总线，改用 Agents Chat
+Hub 的 `agents-chat send --mode fast` 一次直发。standard 的小任务可不 claim，
+直接执行 `result` 并省略 `--token`；已经 claim、blocked 或 strict 的任务必须
+携带有效 token。验收失败继续对同一个 task_id 处理，不新建“复验任务”。
+
 `send --message-id UUID` 是可选幂等键；同 ID 且内容相同返回原事件，
 内容不同会报错。所有后续事件均支持此参数。超时重试应复用同一 ID，
 不要生成新 ID 重复下单。claim 的幂等返回保留原 token 和原到期时间。
@@ -78,8 +83,8 @@ body 参数和 data-file 互斥；result 可重复使用 `--evidence` 给出简�
 ## 初始化别的项目
 
 ```text
-python CLI --project /absolute/new-project init --project-id unique-project-id
-python CLI --project /absolute/new-project init --project-id unique-project-id --roles builder reviewer
+python CLI --project /absolute/new-project init --project-id unique-project-id --collaboration-mode standard
+python CLI --project /absolute/new-project init --project-id unique-project-id --roles builder reviewer --collaboration-mode fast
 ```
 
 上面两种 init 写法二选一：不传 roles 是兼容旧用法的 Web 四角色默认值，

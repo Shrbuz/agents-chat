@@ -24,6 +24,8 @@ DEFAULT_RESPONSIBILITIES = {
     "tester": "使用 ego-browser 实操已部署生产版本，报告验收结果并跟踪缺陷复测。",
 }
 TERMINAL = ("closed", "cancelled")
+COLLABORATION_MODES = ("fast", "standard", "strict")
+COORDINATION_BUDGETS = {"fast": 0, "standard": 120, "strict": 900}
 SKILL_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -112,6 +114,13 @@ def uuid_text(value):
     return value
 
 
+def collaboration_mode(value=None):
+    mode = value or "standard"
+    if mode not in COLLABORATION_MODES:
+        raise ValueError("collaboration_mode must be fast, standard or strict.")
+    return mode
+
+
 def validate_role_ids(roles):
     if not isinstance(roles, (list, tuple)) or not roles:
         raise ValueError("roles must be a nonempty list of unique role identifiers.")
@@ -157,9 +166,10 @@ def validate_role_metadata(config):
     if (not isinstance(defaults, dict) or
             any(role is not None and role not in config["roles"] for role in defaults.values())):
         raise ValueError("Client defaults must refer to a configured role or null.")
+    collaboration_mode(config.get("collaboration_mode"))
 
 
-def default_config(project_id, roles=None, role_descriptions=None):
+def default_config(project_id, roles=None, role_descriptions=None, mode="standard"):
     roles = validate_role_ids(DEFAULT_ROLES if roles is None else roles)
     config = {
         "schema_version": 1,
@@ -169,6 +179,7 @@ def default_config(project_id, roles=None, role_descriptions=None):
         "role_descriptions": {role: DEFAULT_RESPONSIBILITIES.get(role, "") for role in roles},
         "client_defaults": {"codex": None, "qoder": "ops" if "ops" in roles else None},
         "lease_seconds": 1800,
+        "collaboration_mode": collaboration_mode(mode),
         "production": {"base_url": None, "admin_url": None, "release_id": None,
                        "deployment_status": "unverified", "acceptance_sources": []},
     }
@@ -187,6 +198,8 @@ STARTUP = """# Agent Chat 项目入口
 agent_chat/project.json 及已安装 agent-chat 技能的 SKILL.md。确认当前会话
 角色（以 project.json 的 roles 为准）和独立 session ID，运行 helper 的
 doctor、status、inbox。角色未明确时先确认；配置/方案咨询不必领取任务。
+先读 project.json 的 collaboration_mode：fast 由单 owner 直接闭环；standard
+只交接真实依赖；strict 才使用完整 claim/result/verify 与独立证据复核。
 在阶段完成、交接和最终回复前检查收件箱和自己发出的未关闭任务。
 确有角色需要知晓或接手时，按技能 references/handoff.md 简短交接；
 有原生发送工具、明确目标和用户授权时，按 references/notifications.md
@@ -209,12 +222,12 @@ IGNORE = """# Runtime messages, evidence and per-machine settings are not source
 """
 
 
-def initialize(project, project_id, roles=None, role_descriptions=None):
+def initialize(project, project_id, roles=None, role_descriptions=None, mode="standard"):
     if not project_id or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for c in project_id):
         raise ValueError("project-id must use lowercase letters, digits, hyphens or underscores.")
     if roles is not None:
         roles = validate_role_ids(roles)
-    proposed = default_config(project_id, roles, role_descriptions)
+    proposed = default_config(project_id, roles, role_descriptions, mode)
     project = Path(project).resolve()
     project.mkdir(parents=True, exist_ok=True)
     bus_dir = project / "agent_chat"
@@ -272,6 +285,7 @@ class Bus:
         config_dir = self.project / "agent_chat"
         self.config = read_json(config_dir / "project.json")
         self.project_id = self.config["project_id"]
+        self.collaboration_mode = collaboration_mode(self.config.get("collaboration_mode"))
         if self.config.get("schema_version") != 1:
             raise ValueError("Unsupported project configuration version.")
         self.local = read_json(config_dir / "project.local.json") if (config_dir / "project.local.json").exists() else {}
@@ -377,6 +391,7 @@ class Bus:
             tasks[task_id] = {
                 "task_id": task_id, "requester": event["from"], "assignee": event["to"],
                 "status": "pending", "request": data, "claim": None,
+                "collaboration_mode": collaboration_mode(data.get("collaboration_mode")),
                 "created_at": event["created_at"], "latest_result": None,
             }
         elif task_id not in tasks:
@@ -414,6 +429,10 @@ class Bus:
             uuid_text(task_id)
         message_id = uuid_text(message_id) if message_id else str(uuid.uuid4())
         data = dict(data or {})
+        explicit_collaboration_mode = data.get("collaboration_mode") if kind == "request" else None
+        if kind == "request":
+            mode = collaboration_mode(data.get("collaboration_mode") or self.collaboration_mode)
+            data["collaboration_mode"] = mode
         if lease_seconds is None:
             lease_seconds = self.config.get("lease_seconds", 1800)
         if not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 86400:
@@ -425,11 +444,23 @@ class Bus:
             events, tasks = self.load()
             existing = next((e for e in events if e["message_id"] == message_id), None)
             if existing:
-                if existing.get("intent") != intent:
+                existing_intent = dict(existing.get("intent") or {})
+                if existing_intent.get("type") == "request":
+                    existing_data = dict(existing_intent.get("data") or {})
+                    existing_data.setdefault("collaboration_mode", "standard")
+                    existing_intent["data"] = existing_data
+                    if explicit_collaboration_mode is None:
+                        incoming_data = dict(intent.get("data") or {})
+                        incoming_data["collaboration_mode"] = existing_data["collaboration_mode"]
+                        intent["data"] = incoming_data
+                if existing_intent != intent:
                     raise ValueError("message-id was already used with different content.")
                 return {"event": existing, "task": tasks[existing["task_id"]], "duplicate": True}
             now = utc_now()
             if kind == "request":
+                if data["collaboration_mode"] == "fast":
+                    raise ValueError(
+                        "fast mode uses direct Agents Chat send; use standard/strict for a file-bus task.")
                 if recipient not in self.mailboxes or recipient == role:
                     raise ValueError("A request must target another valid role.")
                 for key in ("title", "body"):
@@ -444,6 +475,7 @@ class Bus:
                 if task_id not in tasks:
                     raise ValueError("Task not found.")
                 task = tasks[task_id]
+                mode = collaboration_mode(task.get("collaboration_mode"))
                 if task["status"] in TERMINAL:
                     raise ValueError("Task is already closed/cancelled.")
                 target, previous = task["requester"], task["last_message_id"]
@@ -456,13 +488,19 @@ class Bus:
                     data = {"token": str(uuid.uuid4()), "lease_seconds": lease_seconds,
                             "expires_at": stamp(now + timedelta(seconds=lease_seconds))}
                 elif kind in ("renew", "progress", "blocked", "result"):
-                    if role != task["assignee"] or not claim or claim["session"] != session or claim["token"] != token:
+                    if (kind == "result" and mode == "standard" and claim is None
+                            and task["status"] == "pending"):
+                        if role != task["assignee"]:
+                            raise ValueError("Only the assigned role may report a result.")
+                        text_field(data, "body")
+                        list_field(data, "evidence")
+                    elif role != task["assignee"] or not claim or claim["session"] != session or claim["token"] != token:
                         raise ValueError("Claim is missing, replaced, or belongs to another session.")
-                    if parse_time(claim["expires_at"]) <= now:
+                    elif parse_time(claim["expires_at"]) <= now:
                         raise ValueError("Claim expired; reconcile work and claim again for a new token.")
-                    if kind == "renew":
+                    elif kind == "renew":
                         data = {"expires_at": stamp(now + timedelta(seconds=claim["lease_seconds"]))}
-                    else:
+                    elif claim is not None:
                         text_field(data, "body")
                         if kind == "result":
                             list_field(data, "evidence")
@@ -562,11 +600,60 @@ class Bus:
             return {"role": role, "session": session,
                     "marked_read_through_sequence": through}
 
+    @staticmethod
+    def _coordination_metrics(events, task, now=None):
+        """Separate handoff/verification wait from claimed execution time."""
+        relevant = [event for event in events if event["task_id"] == task["task_id"]]
+        relevant.sort(key=lambda event: event["sequence"])
+        waited = 0.0
+        waiting_since = None
+        waiting_for = None
+        for event in relevant:
+            at = parse_time(event["created_at"])
+            kind = event["type"]
+            if kind == "request":
+                waiting_since, waiting_for = at, "assignee"
+            elif kind == "claim":
+                if waiting_since is not None:
+                    waited += max(0.0, (at - waiting_since).total_seconds())
+                waiting_since = waiting_for = None
+            elif kind in ("result", "blocked"):
+                waiting_since, waiting_for = at, "requester"
+            elif kind == "reassign":
+                if waiting_since is not None:
+                    waited += max(0.0, (at - waiting_since).total_seconds())
+                waiting_since, waiting_for = at, "assignee"
+            elif kind == "release":
+                waiting_since, waiting_for = at, "assignee"
+            elif kind == "verify":
+                if waiting_since is not None:
+                    waited += max(0.0, (at - waiting_since).total_seconds())
+                if (event.get("data") or {}).get("outcome") == "fail":
+                    waiting_since, waiting_for = at, "assignee"
+                else:
+                    waiting_since = waiting_for = None
+            elif kind == "cancel":
+                if waiting_since is not None:
+                    waited += max(0.0, (at - waiting_since).total_seconds())
+                waiting_since = waiting_for = None
+        current = 0.0
+        if waiting_since is not None and task["status"] not in TERMINAL:
+            current = max(0.0, ((now or utc_now()) - waiting_since).total_seconds())
+        mode = collaboration_mode(task.get("collaboration_mode"))
+        budget = COORDINATION_BUDGETS[mode]
+        total = int(waited + current)
+        return {
+            "coordination_wait_seconds": total,
+            "coordination_waiting_for": waiting_for if current else None,
+            "coordination_budget_seconds": budget,
+            "coordination_over_budget": bool(budget and total > budget),
+        }
+
     def status(self, role=None, include_closed=False):
         if role is not None:
             self.require_role(role)
         with self.locked():
-            _, tasks = self.load()
+            events, tasks = self.load()
             now = utc_now()
             selected = []
             for original in tasks.values():
@@ -578,6 +665,7 @@ class Bus:
                 task["lease_expired"] = bool(task["claim"] and parse_time(task["claim"]["expires_at"]) <= now)
                 task["overdue"] = bool(task["request"].get("due_at") and
                                        parse_time(task["request"]["due_at"]) <= now and task["status"] not in TERMINAL)
+                task.update(self._coordination_metrics(events, task, now))
                 selected.append(task)
             selected.sort(key=lambda t: (t["request"].get("priority", "P2"), t["sequence"]))
             return {"project_id": self.project_id, "bus_root": str(self.root), "tasks": selected}
@@ -587,7 +675,9 @@ class Bus:
             events, tasks = self.load()
             if task_id not in tasks:
                 raise ValueError("Task not found.")
-            return {"task": tasks[task_id], "events": [e for e in events if e["task_id"] == task_id]}
+            task = dict(tasks[task_id])
+            task.update(self._coordination_metrics(events, task))
+            return {"task": task, "events": [e for e in events if e["task_id"] == task_id]}
 
     def paths(self):
         return {"project": str(self.project), "project_id": self.project_id, "bus_root": str(self.root),
@@ -595,16 +685,18 @@ class Bus:
                 "evidence": str(self.root / "evidence")}
 
     def onboard(self):
+        mode = collaboration_mode(self.config.get("collaboration_mode"))
         roles = {}
         for role, mailbox in self.mailboxes.items():
             responsibility = self.config.get("role_descriptions", {}).get(role) or DEFAULT_RESPONSIBILITIES.get(
                 role, "按本项目已确认的角色职责和验收条件开展工作。")
-            prompt = (f"使用 agent-chat，项目 {self.project}。你负责 {role}：{responsibility} "
+            prompt = (f"使用 agent-chat，项目 {self.project}，默认协作模式 {mode}。你负责 {role}：{responsibility} "
                       "读取项目 AGENTS.md、agent_chat/project.json 和技能，生成并保留本会话独立 session ID，"
                       "运行 doctor、status 和 inbox 后再领取任务。阶段完成与最终回复前核对收件箱，"
                       "回报结果并明确新增交接、等待事项或本轮无新增指令。直发其他聊天需先确认目标与用户授权。")
             roles[role] = {"mailbox": str(mailbox), "responsibility": responsibility, "startup_prompt": prompt}
-        return {"project": str(self.project), "project_id": self.project_id, "roles": roles,
+        return {"project": str(self.project), "project_id": self.project_id,
+                "collaboration_mode": mode, "roles": roles,
                 "chat_creation_performed": False, "chat_bindings_verified": False,
                 "next": "Reuse suitable existing chats or suggest one separate chat per confirmed role; create only on the user's explicit request. Mailbox creation does not create or wake chats."}
 
@@ -633,6 +725,7 @@ def build_parser():
     commands = parser.add_subparsers(dest="command", required=True)
     init = commands.add_parser("init")
     init.add_argument("--project-id", required=True)
+    init.add_argument("--collaboration-mode", choices=COLLABORATION_MODES, default="standard")
     role_plan = init.add_mutually_exclusive_group()
     role_plan.add_argument("--roles", nargs="+", metavar="ROLE")
     role_plan.add_argument("--roles-file", help="UTF-8 JSON object mapping role IDs to responsibilities")
@@ -661,6 +754,8 @@ def build_parser():
     send.add_argument("--to", dest="recipient", required=True)
     send.add_argument("--session", required=True)
     send.add_argument("--data-file", required=True)
+    send.add_argument("--mode", choices=COLLABORATION_MODES,
+                      help="Task mode; fast uses the hub's direct send path, not this file bus")
     send.add_argument("--message-id")
     for command in ("claim", "renew", "progress", "blocked", "result", "verify", "cancel"):
         sub = commands.add_parser(command)
@@ -670,8 +765,10 @@ def build_parser():
         sub.add_argument("--message-id")
         if command == "claim":
             sub.add_argument("--lease-seconds", type=int)
-        if command in ("renew", "progress", "blocked", "result"):
+        if command in ("renew", "progress", "blocked"):
             sub.add_argument("--token", required=True)
+        if command == "result":
+            sub.add_argument("--token", help="Optional for an immediate standard-mode result")
         if command in ("progress", "blocked", "result", "verify", "cancel"):
             content = sub.add_mutually_exclusive_group(required=True)
             content.add_argument("--body")
@@ -694,7 +791,8 @@ def run(args):
                     any(not isinstance(value, str) or not value.strip() for value in descriptions.values())):
                 raise ValueError("roles-file must map role IDs to nonempty responsibilities.")
             roles = list(descriptions)
-        return initialize(args.project, args.project_id, roles=roles, role_descriptions=descriptions)
+        return initialize(args.project, args.project_id, roles=roles, role_descriptions=descriptions,
+                          mode=args.collaboration_mode)
     bus = Bus(args.project)
     command = args.command
     if hasattr(args, "session") and (not args.session.strip() or len(args.session) > 160):
@@ -742,6 +840,8 @@ def run(args):
         data["body"] = args.body
     if command == "result" and getattr(args, "evidence", None):
         data["evidence"] = args.evidence
+    if command == "send" and args.mode:
+        data["collaboration_mode"] = args.mode
     if command == "verify":
         data["outcome"] = args.outcome
     return bus.submit("request" if command == "send" else command, args.role, args.session,

@@ -23,18 +23,28 @@ Agents Chat 在本机后台常驻，统一管理多个项目。每个项目有�
 
 只问一次，用户说不用就别再提。
 
-## 先选模式，不要停下来问用户
+## 先选协作强度，再选投递路径
 
-本项目只有两种工作模式，**按项目现状自动选**：
+`.agents-chat/project.json` 和 `agent_chat/project.json` 的 `collaboration_mode` 是项目默认值，任务可显式覆盖：
+
+| 协作强度 | 何时使用 | 硬规则 |
+|---|---|---|
+| `fast` | 小型、局部、低风险 issue | 当前 owner 直接闭环；确有独有能力依赖时只做一次 `send --mode fast`；不得创建文件总线任务或二次验收链 |
+| `standard` | 普通跨角色开发 | 只交接真实依赖；沿用同一个任务返修；立即完成可不 claim 直接 result，发起方 verify |
+| `strict` | 发布、生产、权限、安全、支付、迁移等高风险工作 | 必须走文件总线的 request/claim/result/verify，并独立核对证据 |
+
+用户未指定时按项目默认值执行，不为每个小 issue 询问模式；风险明显升高时可以从 `fast` 升级到 `standard` / `strict`，并说明原因。不得静默降级 `strict`。
+
+底层仍有两条投递路径，**按模式和项目现状自动选**：
 
 | 项目里是否已有 `agent_chat/project.json` | 用哪种模式 | 怎么派任务 |
 |---|---|---|
-| 有（多数情况） | 总线模式：文件总线派活，中枢只负责唤醒 | `bus request`（见下） |
-| 没有 | 中枢模式：由后台队列派活 | `send`（见下） |
+| 有（多数情况） | `standard` / `strict` 用总线；`fast` 用一次直发 | `bus request --mode ...` 或 `send --mode fast` |
+| 没有 | 中枢模式：由后台队列派活 | `send --mode fast|standard`；`strict` 先建立总线 |
 
 规则：**同一条请求只能走一条链路**。项目已经有文件总线时，不要在 `bus request` 之后再对同一件事调用 `send`，也不要反过来。这不是“两套系统必须二选一”，而是“一件事只发一次”。
 
-如果同时看到另一个叫 `agent-chat` 的技能：**以本技能为准**。它保留的是同一份文件格式和规范正文，不需要再读一遍，也不存在需要用户裁决的冲突。
+`fast` 送进文件总线会被 CLI 拒绝；`strict` 走普通直发也会被拒绝。不要绕过这两个保护。
 
 ## 找到命令
 
@@ -49,28 +59,31 @@ Agents Chat 在本机后台常驻，统一管理多个项目。每个项目有�
 **“把这个项目接成多角色协作”**
 
 ```powershell
-& $cli --config <hub配置> setup --root <项目目录> --name <项目名> --role backend --role frontend
+& $cli --config <hub配置> setup --root <项目目录> --name <项目名> `
+    --collaboration-mode standard --role backend --role frontend
 ```
 
 `setup` 会生成 `.agents-chat/project.json`、角色提示词、`AGENTS.md` 标记块和每角色 MCP 配置；项目已有 `agent_chat/project.json` 时**直接关联，不重建**（返回 `status: existing`）。
 
-返回值里有两个字段要直接用，不要自己改写：
+返回值里有三个字段要直接用，不要自己改写：
 
 - `mode`：`bus` 表示本项目走文件总线派活，`queue` 表示走中枢队列——它就是这条项目该用的链路，不需要再问用户。
+- `collaboration_mode`：`fast` / `standard` / `strict` 协作强度；它决定是否需要 claim、verify 和独立证据复核。
 - `phrases`：每个角色的 `join` / `dispatch` / `verify` 原话，逐字贴给用户，让他在对应聊天里说。
 
 **“给 <角色> 派活：……”**
 
 ```powershell
-# 有文件总线时
+# standard / strict 且有文件总线时
 & $cli --project <项目> bus request --from <自己> --to <目标角色> --session <自己的会话ID> `
-    --title "<一句话标题>" --body "<细节>" --acceptance "<可验证的验收条件>"
+    --title "<一句话标题>" --body "<细节>" --acceptance "<可验证的验收条件>" --mode standard
 
-# 没有文件总线时
-& $cli send --from <自己> --to <目标角色> --key <稳定幂等键> --text "<任务>" --timeout 300
+# fast；无论项目是否已有总线都只做一次直发
+& $cli send --from <自己> --to <目标角色> --mode fast `
+    --key <稳定幂等键> --text "<任务>" --timeout 300
 ```
 
-必须带验收条件——没有验收条件的任务不算任务。保存返回的 `task_id`。
+`standard` / `strict` 必须带验收条件；`fast` 仍要在任务正文写清完成标准，但不创建额外验收任务。保存返回的 `task_id`。
 
 只提醒对方查看收件箱、不要把提醒当成任务执行时，用专门的 `notify`（别名 `wakeup`）。它会自动设置 `agent_chat_wakeup`，投递成功即结束，**不等待也不会中断**目标聊天：
 
@@ -155,6 +168,9 @@ kimi session list --cwd <项目目录> --json
 & $cli --project <项目> bus verify <task_id> --role <发起角色> --session <会话ID> --outcome pass --body "..."
 ```
 
+- `standard` 的小任务可以从 `pending` 直接 `result`，省略 claim 和 token；一旦 claim，result 仍必须带 token。
+- `strict` 必须执行完整四步，不允许省略 claim 或 verify。
+- `fast` 不进入本节流程；需要另一个角色时使用一次 `send --mode fast`，结果自动回传。
 - 状态机：`pending → in_progress → resolved → closed`；`verify(fail)` 回落 `pending`；`blocked` 释放领取。
 - 租约过期后旧 token 失效，另一个会话可以重新领取。
 - 请求必须带 `--acceptance`，结果必须带 `--evidence`。

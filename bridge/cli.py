@@ -18,10 +18,11 @@ from .config import (ADAPTERS, ConfigError, TRANSPORT_ADAPTERS, adapter_for_tran
                      upsert_project)
 from .onboarding import add_role as add_project_role
 from .onboarding import (cli_command, endpoint_for, role_prompt, setup as setup_project,
-                         update_entry)
+                         set_collaboration_mode, update_entry)
 from .paths import ROOT, default_config, project_context, resolve_config, resolve_state
 from .store import Store, compact
 from .buscli import add_commands as add_bus_commands, bus_root, run as run_bus
+from .collaboration import MODES
 
 from . import __version__ as VERSION
 
@@ -839,6 +840,8 @@ def parser():
     s.add_argument("--queue-ttl", type=int, default=3600)
     s.add_argument("--context", action="append", default=[])
     s.add_argument("--reply-mode", choices=("mailbox", "run"), default="mailbox")
+    s.add_argument("--mode", choices=MODES,
+                   help="Collaboration mode for this task (defaults to the target project's mode)")
     for name in ("notify", "wakeup"):
         n = sub.add_parser(name, help="Deliver a notification/wakeup; never waits for or cancels execution")
         _project_option(n)
@@ -944,6 +947,10 @@ def parser():
     remove = project_sub.add_parser("remove")
     remove.add_argument("--id", required=True)
     remove.add_argument("--force", action="store_true")
+    mode = project_sub.add_parser("mode", help="Set the default fast/standard/strict collaboration policy")
+    mode.add_argument("--id", required=True)
+    mode.add_argument("--mode", required=True, choices=MODES)
+    mode.add_argument("--no-restart", action="store_true")
     # role commands
     role = sub.add_parser("role")
     role_sub = role.add_subparsers(dest="role_command", required=True)
@@ -987,6 +994,8 @@ def parser():
     s.add_argument("--no-agents", action="store_true")
     s.add_argument("--no-agent-chat", action="store_true",
                    help="Do not initialize the bundled agent-chat file bus")
+    s.add_argument("--collaboration-mode", choices=MODES,
+                   help="Project default; standard is used for new projects when omitted")
     s.add_argument("--no-restart", action="store_true")
     workbuddy = sub.add_parser("workbuddy", help="Connect WorkBuddy to Agents Chat over local MCP")
     workbuddy_sub = workbuddy.add_subparsers(dest="workbuddy_command", required=True)
@@ -1084,7 +1093,9 @@ def main():
                                  timeout=args.timeout, delivery_timeout=delivery_timeout,
                                  interrupt_on_timeout=args.interrupt_on_timeout,
                                  context=args.context, reply_mode=args.reply_mode,
-                                 queue_ttl=args.queue_ttl, **({"project": project} if project else {}))
+                                 queue_ttl=args.queue_ttl,
+                                 **({"collaboration_mode": args.mode} if args.mode else {}),
+                                 **({"project": project} if project else {}))
         elif args.command in ("notify", "wakeup"):
             prompt = _prompt_from_args(args)
             key = args.key or "notify:" + uuid.uuid4().hex
@@ -1151,7 +1162,8 @@ def main():
                                    name=args.name,
                                    description=args.description, roles=roles, state=state,
                                    write_agents=not args.no_agents, force=args.force,
-                                   with_agent_chat=not args.no_agent_chat)
+                                    with_agent_chat=not args.no_agent_chat,
+                                    collaboration_mode_value=args.collaboration_mode)
             result.update(live_restart_if_running(state, config, not args.no_restart))
         elif args.command == "workbuddy":
             result = workbuddy_command(args, config, state, project)
@@ -1271,6 +1283,10 @@ def project_command(args, config, state):
         return result
     if args.project_command == "list":
         return {"projects": projects_summary(read_config(config)), "config": str(config)}
+    if args.project_command == "mode":
+        result = set_collaboration_mode(config, project_id(args.id), args.mode)
+        result.update(live_restart_if_running(state, config, not args.no_restart))
+        return result
     if args.project_command == "remove":
         pid = project_id(args.id)
         if not args.force:

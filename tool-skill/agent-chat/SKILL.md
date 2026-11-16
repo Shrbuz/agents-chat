@@ -2,7 +2,7 @@
 name: agent-chat
 description: Plan project-specific collaboration roles and chat onboarding, then coordinate them through agent_chat mailboxes and supported native notifications. Use for project collaboration setup, cross-agent requests, handoffs, acceptance, inbox checks, or resuming this workflow in compatible clients.
 metadata:
-  version: "1.2.0"
+  version: "1.3.0"
 ---
 
 # Agent Chat
@@ -72,10 +72,18 @@ initializing another project.
 
 ## Work and communicate
 
+- Read `collaboration_mode` from the project manifest before creating work. `fast`
+  is a single-owner/direct-hub path and must not create a file-bus task. `standard`
+  uses one durable task only for a real dependency; an immediate result may skip
+  `claim`, while the requester still verifies. `strict` uses the complete leased
+  request/claim/result/verify lifecycle and independent evidence review. A task
+  may explicitly escalate its mode, but must not silently downgrade `strict`.
 - Send one concrete request to its recipient's mailbox, with observable
   acceptance criteria. Keep the returned task ID. Reply to the original
   requester's mailbox using the helper; do not edit an existing message.
-- `claim` records acceptance and returns a lease token. Keep the session ID
+- In `standard`, claim work that needs ownership, progress, blocking or transfer;
+  a small immediate result may be reported without it. In `strict`, `claim` is
+  mandatory and returns a lease token. Keep the session ID
   and token with the task. Renew before the lease expires, before consequential
   work, and before reporting a result. An expired/replaced token cannot commit
   progress or a result. Reconcile existing changes before taking over work.

@@ -24,6 +24,8 @@ import os
 import re
 from pathlib import Path
 
+from .collaboration import collaboration_mode
+
 ENDPOINT_NAME = re.compile(r"^[a-zA-Z0-9_.-]{1,64}$")
 PROJECT_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,31}$")
 ROLE_ID = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,47}$")
@@ -230,7 +232,8 @@ def normalize_config(raw, path):
         entry = {"id": pid, "name": project.get("name") or pid, "root": str(root),
                  "description": project.get("description") or "", "bus": project.get("bus"),
                  "plain_addresses": plain, "roles": {},
-                 "agent_chat": _normalize_agent_chat(project.get("agent_chat"), root)}
+                  "agent_chat": _normalize_agent_chat(project.get("agent_chat"), root),
+                  "collaboration_mode": collaboration_mode(project.get("collaboration_mode"))}
         if not isinstance(entry["name"], str) or not entry["name"].strip():
             raise ConfigError("project_name_required: " + pid)
         if not isinstance(entry["description"], str) or len(entry["description"]) > 1000:
@@ -262,7 +265,8 @@ def _normalize_legacy(raw, path, base):
     config = {"version": 2, "legacy_project": pid, "config_path": str(path),
               "projects": {pid: {"id": pid, "name": raw.get("project_name", "默认项目"),
                                  "root": str(base), "description": "", "bus": None,
-                                 "plain_addresses": True, "roles": {}, "agent_chat": None}},
+                                  "plain_addresses": True, "roles": {}, "agent_chat": None,
+                                  "collaboration_mode": collaboration_mode(raw.get("collaboration_mode"))}},
               "endpoints": {}}
     for key, value in raw.items():
         if key not in ("endpoints", "project_id", "project_name", "version", "projects"):
@@ -345,7 +349,9 @@ def projects_summary(config):
         roles = [role_summary(config, address) for address in project["roles"].values()]
         result.append({"id": pid, "name": project["name"], "root": project["root"],
                        "description": project.get("description", ""), "bus": project.get("bus"),
-                       "agent_chat": project.get("agent_chat"), "roles": roles})
+                       "agent_chat": project.get("agent_chat"),
+                       "collaboration_mode": project.get("collaboration_mode", "standard"),
+                       "roles": roles})
     return result
 
 

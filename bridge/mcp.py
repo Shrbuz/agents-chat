@@ -12,6 +12,7 @@ def tools_for(agent, default_transport="mcp"):
          {"target": {"type": "string"}, "prompt": {"type": "string", "maxLength": 6000},
           "key": {"type": "string", "description": "Stable key for retries of this exact request."},
           "timeout": {"type": "integer", "minimum": 1, "maximum": 3600},
+           "collaboration_mode": {"type": "string", "enum": ["fast", "standard", "strict"]},
           "reply_mode": {"type": "string", "enum": ["mailbox", "run"]}}, ["target", "prompt", "key"]),
         ("wait", "Wait for one task using local event notifications; returns compact result. Do not repeatedly poll from the model.",
          {"task_id": {"type": "string"}, "seconds": {"type": "number", "minimum": 0, "maximum": 50}}, ["task_id"]),

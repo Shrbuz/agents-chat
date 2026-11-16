@@ -53,6 +53,17 @@ class ConfigTests(unittest.TestCase):
                 find_role(config, "ops")
             summary = projects_summary(config)
             self.assertEqual({item["id"] for item in summary}, {"alpha", "beta"})
+            self.assertTrue(all(item["collaboration_mode"] == "standard" for item in summary))
+
+    def test_invalid_collaboration_mode_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data = project_config(root)
+            data["projects"]["alpha"]["collaboration_mode"] = "ceremonial"
+            config_path = root / "config.json"
+            config_path.write_text(json.dumps(data), encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "fast_standard_or_strict"):
+                read_config(config_path)
 
     def test_peer_allow_list_is_project_aware(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -101,6 +112,19 @@ class HubTests(unittest.TestCase):
         inbox = self.broker.call("inbox", {"recipient": "alpha.backend", "consumer": "test"})
         self.assertEqual(inbox["messages"][0]["from"], "beta.frontend")
         self.assertIn("Fixture process", inbox["messages"][0]["summary"])
+
+    def test_fast_queue_task_records_policy_and_strict_uses_the_bus(self):
+        sent = self.broker.call("send", {"sender": "alpha.backend", "target": "beta.frontend",
+                                         "prompt": "small task", "key": "fast-1", "timeout": 10,
+                                         "collaboration_mode": "fast"})
+        self.assertEqual(sent["collaboration_mode"], "fast")
+        with self.broker.store.db() as db:
+            row = db.execute("SELECT payload FROM tasks WHERE id = ?", (sent["task_id"],)).fetchone()
+        self.assertEqual(json.loads(row["payload"])["collaboration_mode"], "fast")
+        with self.assertRaisesRegex(ValueError, "strict_mode_uses_bus"):
+            self.broker.call("send", {"sender": "alpha.backend", "target": "beta.frontend",
+                                      "prompt": "release", "key": "strict-1", "timeout": 10,
+                                      "collaboration_mode": "strict"})
 
     def test_role_status_exposes_work_and_directional_activity(self):
         sent = self.broker.call("send", {"sender": "alpha.backend", "target": "beta.frontend",
@@ -222,6 +246,7 @@ class SetupTests(unittest.TestCase):
             self.assertTrue(manifest.is_file(), "bundled agent-chat should initialize a bus")
             data = json.loads(manifest.read_text(encoding="utf-8"))
             self.assertEqual(data["project_id"], "demo")
+            self.assertEqual(data["collaboration_mode"], "standard")
             self.assertEqual(set(data["roles"]), {"backend", "frontend"})
             config = read_config(config_path)
             self.assertEqual(config["projects"]["demo"]["agent_chat"]["roles"],
@@ -246,6 +271,25 @@ class SetupTests(unittest.TestCase):
             prompt = (project / ".agents-chat/prompts/backend.md").read_text(encoding="utf-8")
             self.assertIn("agent-chat", prompt)
             self.assertIn(str((project / "agent_chat").resolve()), prompt)
+
+    def test_project_mode_updates_policy_without_touching_roles(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "demo"
+            project.mkdir()
+            config_path = root / "config.json"
+            onboarding.setup(config_path, project, project="demo", roles=[
+                {"role": "backend", "adapter": "fixture"},
+                {"role": "frontend", "adapter": "fixture"}],
+                state=root / "state", write_agents=True)
+            changed = onboarding.set_collaboration_mode(config_path, "demo", "strict")
+            self.assertEqual(changed["collaboration_mode"], "strict")
+            manifest = json.loads((project / "agent_chat/project.json").read_text(encoding="utf-8"))
+            entry = json.loads((project / ".agents-chat/project.json").read_text(encoding="utf-8"))
+            self.assertEqual(manifest["collaboration_mode"], "strict")
+            self.assertEqual(entry["collaboration_mode"], "strict")
+            self.assertEqual(set(manifest["roles"]), {"backend", "frontend"})
+            self.assertIn("`strict`", (project / ".agents-chat/prompts/backend.md").read_text(encoding="utf-8"))
 
 
 class AgentChatBridgeTests(unittest.TestCase):

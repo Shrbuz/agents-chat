@@ -18,7 +18,7 @@
 
 - [快速开始](#快速开始)
 - [核心概念](#核心概念)
-- [两种协作模式](#两种协作模式)
+- [三种协作强度与两条投递路径](#三种协作强度与两条投递路径)
 - [文件总线](#文件总线)
 - [DSH 接入](#dsh-接入)
 - [桌面聊天绑定](#桌面聊天绑定)
@@ -100,16 +100,39 @@ beta.architect ──send alpha.backend──▶ alpha.backend   (跨项目)
 
 ---
 
-## 两种协作模式
+## 三种协作强度与两条投递路径
 
-同一条请求只走一条链路，不存在需要用户裁决的“两套系统”：
+项目默认使用 `standard`，也可以按任务覆盖。三种模式决定流程强度，不代表三套消息系统：
+
+| 模式 | 适用场景 | 流程 |
+| --- | --- | --- |
+| `fast` | 小型、局部、低风险 issue | 单 owner 直接闭环；确有外部依赖时使用一次 `send --mode fast`，不创建 claim/verify 链 |
+| `standard` | 一般跨角色开发 | 只交接真实依赖；一个持久任务反复返修，立即完成时可以不 claim 直接 result，发起方 verify |
+| `strict` | 发布、生产、权限、安全、支付、数据迁移 | 完整 request/claim/result/verify，强制租约和独立证据复核 |
+
+```powershell
+# 设置项目默认模式（同步主配置、项目入口、总线配置和角色提示词）
+& $cli project mode --id alpha --mode fast
+
+# 新项目初始化时直接选择
+& $cli setup --root E:\work\alpha --project alpha --collaboration-mode standard `
+    --role backend --role frontend
+```
+
+同一条请求仍只走一条底层路径：
 
 | 项目里是否已有 `agent_chat/` 总线 | 派活方式 | 中枢的作用 |
 | --- | --- | --- |
-| 有 | 用文件总线（`claim` / `result` / `verify`） | 新事件到达时唤醒对应角色的会话 |
-| 没有 | 用中枢队列（`send` / `wait`） | 直接投递给目标角色 |
+| 有 | `standard` / `strict` 使用文件总线；`fast` 仍使用一次直发 | 新总线事件到达时唤醒对应角色的会话 |
+| 没有 | 用中枢队列（`send` / `wait`）；不能伪装 `strict` 审计 | 直接投递给目标角色 |
 
-技能会自动判断项目现状并选一条，不会来回问用户。
+`fast` 传给文件总线会被拒绝并提示改用直发；`strict` 传给普通 `send` 也会被拒绝并提示建立总线任务。这样不会只在文档里写模式、实际仍走错流程。
+
+`status` / `show` 还会返回 `coordination_wait_seconds`、`coordination_waiting_for`、
+`coordination_budget_seconds` 和 `coordination_over_budget`。指标只累计等待领取、
+等待请求方验收和返工后的再次等待，不把 claim 到 result 的实际开发时间算作
+流程开销。`standard` 默认等待预算为 120 秒，`strict` 为 900 秒；`fast` 不进入
+持久任务链，因此预算为 0。
 
 ### 通知不等于可中断任务
 
@@ -138,7 +161,7 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 
 # 派活
 & $cli --project alpha bus request --from backend --to frontend --session be-1 `
-    --title "登录接口" --body "详情" --acceptance "返回 200" --priority P1
+    --title "登录接口" --body "详情" --acceptance "返回 200" --priority P1 --mode standard
 
 # 领取（返回租约 token）
 & $cli --project alpha bus claim <task-id> --role frontend --session fe-1
@@ -147,6 +170,7 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 & $cli --project alpha bus mark-read-through-sequence --role frontend --session fe-1 <sequence>
 
 # 交结果 / 验收
+# standard 的立即结果可省略 claim 和 token；已经 claim 或 strict 任务必须带 token
 & $cli --project alpha bus result <task-id> --role frontend --session fe-1 --token <token> `
     --body "已完成" --evidence "测试通过"
 & $cli --project alpha bus verify <task-id> --role backend --session be-1 --outcome pass --body "复测通过"
@@ -198,6 +222,7 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 ### 规则摘要
 
 - 状态机：`pending → in_progress → resolved → closed`；`verify --outcome fail` 回落 `pending`。
+- `standard` 可从 `pending` 直接提交一次 result；`strict` 必须先 claim；`fast` 不进入文件总线。
 - 租约默认 30 分钟；桌面会话由中枢自动续期，过期后同一会话的迟交结果仍然受理。
 - 请求必须带 `--acceptance`，结果必须带 `--evidence`；收件箱按「角色 + 会话」记录已读。
 - 写消息请用 CLI 或技能脚本，不要手写文件名——`<序号:08位>_<message_id>.json` 最容易写坏。

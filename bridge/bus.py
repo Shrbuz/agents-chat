@@ -21,6 +21,8 @@ import tempfile
 import time
 import uuid
 
+from .collaboration import collaboration_mode, policy
+
 SCHEMA_VERSION = 1
 TERMINAL = ("closed", "cancelled")
 PRIORITIES = ("P0", "P1", "P2", "P3")
@@ -163,6 +165,7 @@ class Bus:
         if self.config.get("schema_version") != SCHEMA_VERSION:
             raise ValueError("Unsupported project configuration version.")
         self.project_id = self.config["project_id"]
+        self.collaboration_mode = collaboration_mode(self.config.get("collaboration_mode"))
         self.mailboxes = mailbox_paths(self.root, self.config["roles"])
 
     # -- state -----------------------------------------------------------------
@@ -269,6 +272,7 @@ class Bus:
             tasks[task_id] = {
                 "task_id": task_id, "requester": event["from"], "assignee": event["to"],
                 "status": "pending", "request": data, "claim": None,
+                "collaboration_mode": collaboration_mode(data.get("collaboration_mode")),
                 "created_at": event["created_at"], "latest_result": None,
             }
         elif task_id not in tasks:
@@ -321,6 +325,10 @@ class Bus:
             uuid_text(task_id)
         message_id = uuid_text(message_id) if message_id else str(uuid.uuid4())
         data = dict(data or {})
+        explicit_collaboration_mode = data.get("collaboration_mode") if kind == "request" else None
+        if kind == "request":
+            mode = collaboration_mode(data.get("collaboration_mode") or self.collaboration_mode)
+            data["collaboration_mode"] = mode
         if lease_seconds is None:
             lease_seconds = self.config.get("lease_seconds", 1800)
         if not isinstance(lease_seconds, int) or not 30 <= lease_seconds <= 86400:
@@ -336,11 +344,24 @@ class Bus:
             events, tasks = self.load()
             existing = next((e for e in events if e["message_id"] == message_id), None)
             if existing:
-                if existing.get("intent") != intent:
+                existing_intent = dict(existing.get("intent") or {})
+                if existing_intent.get("type") == "request":
+                    existing_data = dict(existing_intent.get("data") or {})
+                    existing_data.setdefault("collaboration_mode", "standard")
+                    existing_intent["data"] = existing_data
+                    if explicit_collaboration_mode is None:
+                        incoming_data = dict(intent.get("data") or {})
+                        incoming_data["collaboration_mode"] = existing_data["collaboration_mode"]
+                        intent["data"] = incoming_data
+                if existing_intent != intent:
                     raise ValueError("message-id was already used with different content.")
                 return {"event": existing, "task": tasks[existing["task_id"]], "duplicate": True}
             now = utc_now()
             if kind == "request":
+                if data["collaboration_mode"] == "fast":
+                    raise ValueError(
+                        "fast_mode_uses_direct_send: use `agents-chat send --mode fast` for one bounded "
+                        "handoff, or explicitly escalate this bus task to --mode standard/strict")
                 if recipient not in self.mailboxes or recipient == role:
                     raise ValueError("A request must target another valid role.")
                 for key in ("title", "body"):
@@ -355,6 +376,7 @@ class Bus:
                 if task_id not in tasks:
                     raise ValueError("Task not found.")
                 task = tasks[task_id]
+                mode = collaboration_mode(task.get("collaboration_mode"))
                 if task["status"] in TERMINAL:
                     raise ValueError("Task is already closed/cancelled.")
                 target, previous = task["requester"], task["last_message_id"]
@@ -378,6 +400,15 @@ class Bus:
                             raise ValueError("Only claimed work can be reassigned.")
                         text_field(data, "body")
                         target = task["assignee"]
+                    elif (kind == "result" and mode == "standard" and claim is None
+                          and task["status"] == "pending"):
+                        active = self._active_sessions()
+                        if role != task["assignee"]:
+                            raise ValueError("Only the assigned role may report a result.")
+                        if active is not None and role in active and active[role] != session:
+                            raise ValueError("session_not_active: 该角色的活跃会话是 %s；请先接管或结束旧会话" % active[role])
+                        text_field(data, "body")
+                        list_field(data, "evidence")
                     else:
                         if role != task["assignee"] or not claim or claim["session"] != session or claim["token"] != token:
                             raise ValueError("Claim is missing, replaced, or belongs to another session.")
@@ -507,11 +538,63 @@ class Bus:
             return None
         return data if isinstance(data, dict) else None
 
+    @staticmethod
+    def _coordination_metrics(events, task, now=None):
+        """Separate handoff/verification wait from claimed execution time."""
+        relevant = [event for event in events if event["task_id"] == task["task_id"]]
+        relevant.sort(key=lambda event: event["sequence"])
+        waited = 0.0
+        waiting_since = None
+        waiting_for = None
+        for event in relevant:
+            at = parse_time(event["created_at"])
+            kind = event["type"]
+            if kind == "request":
+                waiting_since, waiting_for = at, "assignee"
+            elif kind == "claim":
+                if waiting_since is not None:
+                    waited += max(0.0, (at - waiting_since).total_seconds())
+                waiting_since = waiting_for = None
+            elif kind == "result":
+                # No claim means the assignee performed a standard-mode task
+                # directly; request→result is useful execution, not ceremony.
+                waiting_since, waiting_for = at, "requester"
+            elif kind == "blocked":
+                waiting_since, waiting_for = at, "requester"
+            elif kind == "reassign":
+                if waiting_since is not None:
+                    waited += max(0.0, (at - waiting_since).total_seconds())
+                waiting_since, waiting_for = at, "assignee"
+            elif kind == "release":
+                waiting_since, waiting_for = at, "assignee"
+            elif kind == "verify":
+                if waiting_since is not None:
+                    waited += max(0.0, (at - waiting_since).total_seconds())
+                if (event.get("data") or {}).get("outcome") == "fail":
+                    waiting_since, waiting_for = at, "assignee"
+                else:
+                    waiting_since = waiting_for = None
+            elif kind == "cancel":
+                if waiting_since is not None:
+                    waited += max(0.0, (at - waiting_since).total_seconds())
+                waiting_since = waiting_for = None
+        current = 0.0
+        if waiting_since is not None and task["status"] not in TERMINAL:
+            current = max(0.0, ((now or utc_now()) - waiting_since).total_seconds())
+        budget = policy(task.get("collaboration_mode"))["coordination_budget_seconds"]
+        total = int(waited + current)
+        return {
+            "coordination_wait_seconds": total,
+            "coordination_waiting_for": waiting_for if current else None,
+            "coordination_budget_seconds": budget,
+            "coordination_over_budget": bool(budget and total > budget),
+        }
+
     def status(self, role=None, include_closed=False):
         if role is not None:
             self.require_role(role)
         with self.locked():
-            _, tasks = self.load()
+            events, tasks = self.load()
             now = utc_now()
             selected = []
             for original in tasks.values():
@@ -529,6 +612,7 @@ class Bus:
                     if task["claim"] else 0)
                 task["overdue"] = bool(task["request"].get("due_at") and
                                        parse_time(task["request"]["due_at"]) <= now and task["status"] not in TERMINAL)
+                task.update(self._coordination_metrics(events, task, now))
                 selected.append(task)
             selected.sort(key=lambda t: (t["request"].get("priority", "P2"), t["sequence"]))
             return {"project_id": self.project_id, "bus_root": str(self.root), "tasks": selected}
@@ -538,7 +622,9 @@ class Bus:
             events, tasks = self.load()
             if task_id not in tasks:
                 raise ValueError("Task not found.")
-            return {"task": tasks[task_id], "events": [e for e in events if e["task_id"] == task_id]}
+            task = dict(tasks[task_id])
+            task.update(self._coordination_metrics(events, task))
+            return {"task": task, "events": [e for e in events if e["task_id"] == task_id]}
 
     def paths(self):
         return {"project_id": self.project_id, "bus_root": str(self.root),

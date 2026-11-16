@@ -7,6 +7,8 @@ import threading
 import time
 from pathlib import Path
 
+from .collaboration import collaboration_mode, policy
+
 
 class ProcessTree:
     """On Windows closing the job kills all assigned descendants, even on broker exit."""
@@ -69,9 +71,12 @@ def make_prompt(task, endpoint):
     # No inbox, old conversation, progress events, or receipts enter this prompt.
     context = "\n".join(p.get("context", []))
     project = endpoint.get("project")
+    mode = collaboration_mode(p.get("collaboration_mode"))
+    mode_policy = policy(mode)
     return (f"Agents Chat task {task['id']}.\n"
             f"Project: {project}. From role: {p.get('sender_address', task['sender'])}. "
             f"To role: {p.get('target_address', task['target'])}.\n"
+            f"Collaboration mode: {mode}. {mode_policy['guidance']}\n"
             "You are acting as the target role in one bounded collaboration task. Perform only this task within your existing permissions. "
             "Do not delegate or message other roles unless the task explicitly requests it; when it does, use the Agents Chat tool/CLI with this role as sender.\n"
             "Your final answer is automatically returned to the requester's inbox. Do not submit a separate reply task for the same result.\n"

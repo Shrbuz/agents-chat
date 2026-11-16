@@ -108,6 +108,7 @@ class WakeupTests(unittest.TestCase):
         self.assertFalse(task["payload"]["interrupt_on_timeout"])
         self.assertFalse(task["payload"]["notify"])
         self.assertIn("收件箱", task["payload"]["prompt"])
+        self.assertIn("standard 小任务可直接处理后 result", task["payload"]["prompt"])
 
     def test_pending_request_wakes_even_when_role_already_has_queued_work(self):
         self.start_bridge()
