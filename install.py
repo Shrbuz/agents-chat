@@ -49,6 +49,25 @@ def stop_tray():
         pass
 
 
+def wait_for_broker_stop(state, timeout=15):
+    """Wait through the normal shutdown window without guessing a fixed delay."""
+    endpoint = Path(state) / "endpoint.json"
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            descriptor = json.loads(endpoint.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return True
+        except (OSError, ValueError):
+            time.sleep(0.1)
+            continue
+        if definitely_stopped(descriptor.get("pid", 0)):
+            endpoint.unlink(missing_ok=True)
+            return True
+        time.sleep(0.1)
+    return not endpoint.exists()
+
+
 def create_shortcut(path, executable, arguments, working_directory):
     """Create a real Windows shell link, which Start search can index."""
     command = """
@@ -128,7 +147,6 @@ def main():
     destination = args.destination.resolve()
     if destination == ROOT or destination in ROOT.parents or ROOT in destination.parents:
         raise SystemExit("安装目录必须与源码目录独立。")
-    stop_tray()
     from build_exe import build_all
     launcher, cli = build_all(ROOT)
     # Preflight configuration before stopping an existing service.
@@ -161,11 +179,14 @@ def main():
             raise SystemExit("仍有排队或执行中的任务，请完成后再安装。")
         live.append(state)
     for state in live:
-        Client(state).call("shutdown")
-        deadline = time.monotonic() + 15
-        while (state / "endpoint.json").exists() and time.monotonic() < deadline:
-            time.sleep(0.1)
-        if (state / "endpoint.json").exists():
+        try:
+            Client(state).call("shutdown")
+        except RuntimeError:
+            # The request may race with a broker already completing shutdown.
+            pass
+    stop_tray()
+    for state in live:
+        if not wait_for_broker_stop(state):
             raise SystemExit("旧服务尚未退出，安装已停止。")
     destination.mkdir(parents=True, exist_ok=True)
     for filename in ["bridge.py", "desktop.py", "desktop_link.py", "opencode_desktop_link.py", "qwen_desktop_link.py", "kimi_desktop_link.py", "qoder_desktop_link.py", "launch_qoder_native.py",
