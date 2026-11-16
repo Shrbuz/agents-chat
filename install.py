@@ -145,9 +145,15 @@ def main():
             health = Client(state).call("health")
         except RuntimeError:
             if (state / "endpoint.json").exists():
-                descriptor = json.loads((state / "endpoint.json").read_text(encoding="utf-8"))
+                try:
+                    descriptor = json.loads((state / "endpoint.json").read_text(encoding="utf-8"))
+                except FileNotFoundError:
+                    # The tray may finish shutting the broker down between the
+                    # existence check and the read. That is already the desired
+                    # upgrade state, so continue instead of failing installation.
+                    continue
                 if definitely_stopped(descriptor.get("pid",0)):
-                    (state / "endpoint.json").unlink()
+                    (state / "endpoint.json").unlink(missing_ok=True)
                 else:
                     raise SystemExit(f"无法确认旧服务状态，请先检查：{state}")
             continue
