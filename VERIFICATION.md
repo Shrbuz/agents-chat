@@ -2,6 +2,18 @@
 
 本文件只记录可公开复现的检查。真实桌面聊天 ID、任务 ID、业务项目路径和本机截图不进入开源仓库。
 
+## 0.8.1 协作模式与升级可靠性
+
+| 检查 | 结果 |
+|---|---|
+| 协作模式 | 项目默认值与任务级覆盖支持 `fast` / `standard` / `strict`；配置、项目入口、角色提示词与总线 manifest 同步 |
+| 运行时约束 | fast 拒绝进入文件总线；strict 拒绝普通队列直发；standard 小任务可从 pending 直接 result，已 claim 或 strict 任务仍校验租约 token |
+| 协调开销 | `status` / `show` 分别报告等待秒数、当前等待方、模式预算和是否超标；claim 到 result 的实现时间不计入协调等待 |
+| 幂等兼容 | 旧任务缺少模式字段时按 standard 重放；项目默认模式变化后，使用相同 message ID 的历史请求仍保持幂等 |
+| 升级可靠性 | 安装器先检查任务再依次停止 Hub/托盘，并等待 endpoint 消失；Codex 多会话连接注册使用跨进程锁和唯一临时文件 |
+| 发布构建 | 0.8.1 便携包构建与内置 CLI 自检通过；项目模式幂等切换已在安装版验证，配置、总线和生成提示词一致 |
+| 回归 | `python -m unittest discover -s tests -p "test_*.py"`：179 项通过；`compileall`、`py_compile` 与 `git diff --check` 通过 |
+
 ## 0.8.0 历史唤醒抑制、Qwen 与 Kimi Code
 
 | 检查 | 结果 |
