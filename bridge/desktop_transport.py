@@ -17,6 +17,33 @@ RECOVERABLE_CODEX_ERRORS = {
     "connection_context_missing", "app_tools_server_missing",
 }
 
+# These states mean the user-facing host is simply not running or has not
+# rejoined since boot. They remain visible as offline/degraded availability,
+# but are not failed delivery attempts and must not grow a failure counter.
+EXPECTED_OFFLINE_FAILURES = {
+    "connection_context_missing",
+    "connector_heartbeat_stale",
+    "qwen_daemon_unavailable",
+    "kimi_service_unavailable",
+    "opencode_service_unavailable",
+}
+
+
+class ProbeBackoff:
+    """Small bounded retry backoff for an unavailable desktop host."""
+    def __init__(self, initial=3, maximum=30):
+        self.initial = initial
+        self.maximum = maximum
+        self.delay = initial
+
+    def failed(self):
+        current = self.delay
+        self.delay = min(self.maximum, self.delay * 2)
+        return current
+
+    def reset(self):
+        self.delay = self.initial
+
 
 def classify_codex_error(error, connection=None):
     """Separate chat backpressure from broken app transport/runtime state."""
@@ -150,12 +177,35 @@ class DesktopHub:
         except (OSError, ValueError):
             persisted = {}
         self.transport_status = persisted if isinstance(persisted, dict) else {}
+        migrated = False
+        for item in self.transport_status.values():
+            if not isinstance(item, dict):
+                continue
+            kind = item.get("failure_kind")
+            state = item.get("state")
+            active_failure = bool(
+                kind and kind not in EXPECTED_OFFLINE_FAILURES
+                and state not in ("ready", "busy", "reconnecting", "offline"))
+            normalized = 1 if active_failure else 0
+            if int(item.get("consecutive_failures") or 0) != normalized:
+                item["consecutive_failures"] = normalized
+                migrated = True
+            if normalized:
+                item.setdefault("first_failure_at", item.get("updated_at"))
+                item.setdefault("last_failure_at", item.get("updated_at"))
+            else:
+                if item.pop("first_failure_at", None) is not None:
+                    migrated = True
+                if item.pop("last_failure_at", None) is not None:
+                    migrated = True
         self.transport_epochs = {}
         for item in self.transport_status.values():
             transport = item.get("transport") if isinstance(item, dict) else None
             if transport:
                 self.transport_epochs[transport] = max(
                     self.transport_epochs.get(transport, 0), int(item.get("epoch") or 0))
+        if migrated:
+            self._save_transport_status()
 
     def _save_transport_status(self):
         temporary = self.transport_path.with_suffix(".tmp")
@@ -178,6 +228,8 @@ class DesktopHub:
                     "state": "reconnecting", "connection_id": connection_id,
                     "epoch": epoch, "updated_at": now,
                     "last_error": None, "failure_kind": None,
+                    "consecutive_failures": 0,
+                    "first_failure_at": None, "last_failure_at": None,
                 }
             self._save_transport_status()
             self.cv.notify_all()
@@ -195,12 +247,17 @@ class DesktopHub:
             if binding.get("transport") != transport:
                 raise ValueError("transport_report_binding_mismatch")
             previous = self.transport_status.get(agent, {})
-            failures = int(previous.get("consecutive_failures") or 0)
-            if failure_kind and state != "busy":
-                failures += 1
-            elif state == "ready":
-                failures = 0
             now = time.time()
+            active_failure = bool(
+                failure_kind and failure_kind not in EXPECTED_OFFLINE_FAILURES
+                and state not in ("ready", "busy", "reconnecting", "offline"))
+            failures = 1 if active_failure else 0
+            same_episode = bool(
+                active_failure and int(previous.get("consecutive_failures") or 0)
+                and previous.get("failure_kind") == failure_kind)
+            first_failure = previous.get("first_failure_at") if same_episode else (
+                now if active_failure else None)
+            last_failure = now if active_failure else None
             epoch = self.transport_epochs.get(transport, int(previous.get("epoch") or 0))
             item = {
                 **previous, "agent": agent, "transport": transport, "state": state,
@@ -209,12 +266,16 @@ class DesktopHub:
                 "consecutive_failures": failures,
                 "last_error": str(error or summary)[:500] if (error or summary) else None,
                 "failure_kind": failure_kind,
+                "first_failure_at": first_failure,
+                "last_failure_at": last_failure,
             }
             if delivered:
                 item["last_success_at"] = now
                 item["consecutive_failures"] = 0
                 item["last_error"] = None
                 item["failure_kind"] = None
+                item["first_failure_at"] = None
+                item["last_failure_at"] = None
                 item["state"] = "ready"
             self.transport_status[agent] = item
             self._save_transport_status()

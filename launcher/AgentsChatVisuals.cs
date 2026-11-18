@@ -248,7 +248,7 @@ namespace AgentsChatLauncher
         internal bool Degraded;
         internal int Queued;
         internal int RunningTasks;
-        internal int TransportFailures;
+        internal int DegradedTransports;
         internal int PendingResultWakeups;
         internal string Version = "";
         internal readonly List<ProjectSnapshot> Projects = new List<ProjectSnapshot>();
@@ -284,7 +284,7 @@ namespace AgentsChatLauncher
                 foreach (KeyValuePair<string, object> pair in transports)
                 {
                     Dictionary<string, object> item = pair.Value as Dictionary<string, object>;
-                    snapshot.TransportFailures += TrayApp.Number(item, "consecutive_failures");
+                    if (Bool(item, "degraded")) snapshot.DegradedTransports++;
                     snapshot.PendingResultWakeups += TrayApp.Number(item, "pending_result_wakeups");
                 }
             }
@@ -841,7 +841,7 @@ namespace AgentsChatLauncher
         private string AttentionText()
         {
             List<string> messages = new List<string>();
-            if (snapshot.TransportFailures > 0) messages.Add(snapshot.TransportFailures + " 次连续失败");
+            if (snapshot.DegradedTransports > 0) messages.Add(snapshot.DegradedTransports + " 类传输异常");
             if (snapshot.PendingResultWakeups > 0) messages.Add(snapshot.PendingResultWakeups + " 个结果待唤醒");
             int offline = snapshot.TotalRoles - snapshot.OnlineRoles;
             if (offline > 0) messages.Add(offline + " 个角色离线");
@@ -889,7 +889,7 @@ namespace AgentsChatLauncher
                        Convert.ToString(snapshot.Queued), snapshot.Queued == 0 ? "无待处理任务" : "等待角色处理", false);
             string linkNote = snapshot.PendingResultWakeups > 0
                 ? snapshot.PendingResultWakeups + " 个提醒待送达"
-                : snapshot.TransportFailures > 0 ? snapshot.TransportFailures + " 次失败" : "最近轮询";
+                : snapshot.DegradedTransports > 0 ? snapshot.DegradedTransports + " 类传输异常" : "最近轮询";
             DrawMetric(graphics, new Rectangle(contentX + (metricWidth + gap) * 3, summaryY, metricWidth, summaryHeight), "链路状态",
                        snapshot.Degraded ? "注意" : snapshot.Running ? "正常" : "离线",
                        linkNote, false);
@@ -1258,7 +1258,7 @@ namespace AgentsChatLauncher
         {
             if (role.Mismatch) return "适配器与传输不一致";
             if (role.PendingResultWakeups > 0) return role.PendingResultWakeups + " 个结果唤醒未送达";
-            if (role.FailureCount > 0) return "连续失败 " + role.FailureCount;
+            if (role.FailureCount > 0) return "存在未恢复故障";
             if (role.IsWorking) return "工作中";
             if (role.QueuedTasks > 0 || role.Pending) return "有任务等待处理";
             if (role.LastSuccess.HasValue) return "最近投递成功";
@@ -1317,7 +1317,7 @@ namespace AgentsChatLauncher
             using (Pen pen = new Pen(RelayTheme.Line)) graphics.DrawLine(pen, bounds.X + 16, y, bounds.Right - 16, y);
             y += 14;
             DrawDefinition(graphics, bounds, ref y, "任务", role.RunningTasks + " 工作中 / " + role.QueuedTasks + " 等待");
-            DrawDefinition(graphics, bounds, ref y, "连续失败", Convert.ToString(role.FailureCount));
+            DrawDefinition(graphics, bounds, ref y, "未恢复故障", Convert.ToString(role.FailureCount));
             DrawDefinition(graphics, bounds, ref y, "未唤醒结果", Convert.ToString(role.PendingResultWakeups));
             y += 10;
             using (Pen pen = new Pen(RelayTheme.Line)) graphics.DrawLine(pen, bounds.X + 16, y, bounds.Right - 16, y);
@@ -1588,7 +1588,7 @@ namespace AgentsChatLauncher
         private string AttentionText()
         {
             if (snapshot.PendingResultWakeups > 0) return snapshot.PendingResultWakeups + " 个结果唤醒未送达";
-            if (snapshot.TransportFailures > 0) return "传输连续失败 " + snapshot.TransportFailures + " 次";
+            if (snapshot.DegradedTransports > 0) return snapshot.DegradedTransports + " 类传输异常";
             int offline = snapshot.TotalRoles - snapshot.OnlineRoles;
             return offline > 0 ? offline + " 个会话离线或未绑定" : "传输或唤醒链路异常";
         }

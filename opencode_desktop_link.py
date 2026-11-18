@@ -10,6 +10,7 @@ from pathlib import Path
 
 from bridge.client import Client
 from bridge.config import find_role, read_config
+from bridge.desktop_transport import ProbeBackoff
 from bridge.opencode import (classify_opencode_error, inspect_opencode_delivery,
                              parse_opencode_stream, probe_opencode)
 
@@ -167,6 +168,7 @@ def run_connector(state, agent):
     lock = SingleInstance(state / (agent.replace(".", "-") + "-desktop.lock"))
     client = Client(state)
     next_probe = 0.0
+    backoff = ProbeBackoff()
     try:
         endpoint = _role_endpoint(state, agent)
         command, cwd = list(endpoint["command"]), endpoint["cwd"]
@@ -180,6 +182,7 @@ def run_connector(state, agent):
                 if time.monotonic() >= next_probe:
                     probe_opencode(command, cwd, target["session_id"])
                     _report(client, agent, "ready")
+                    backoff.reset()
                     next_probe = time.monotonic() + 30
                 job = client.call("desktop_receive", agent=agent,
                                   session_id=target["session_id"], transport="opencode_native",
@@ -193,7 +196,7 @@ def run_connector(state, agent):
                 next_probe = 0
                 if (state / "connectors.stop").exists() or not (state / "endpoint.json").exists():
                     return
-                time.sleep(3)
+                time.sleep(backoff.failed())
     finally:
         lock.close()
 

@@ -100,7 +100,7 @@ fast 因不建立持久任务链而为 0。
 - **Qwen Code（实验性）**：用户显式启动 `qwen serve` 并选择既有 session；连接器先做 capability/session/workspace 探测，再按官方协议先订阅 SSE、后提交 non-blocking prompt，以 `task_id` 作 idempotency key，并只接受同一 `promptId` 的终态。daemon 不在线、能力缺失、会话或工作区不匹配时明确 degraded，不创建替代会话、不回退 UI 自动化。
 - **Kimi Code（实验性）**：只支持仍在维护的 Node.js Kimi Code CLI。用户显式登录并启动 `kimi web`；连接器从实例注册表发现服务、从 Kimi 用户目录读取本机 bearer，校验 live OpenAPI/AsyncAPI、精确 session/workspace/模型，然后先建立 WebSocket `subscribe_v2` 再提交 prompt。终态必须与返回的 `prompt_id` / `triggerPromptId` 匹配，重连前以 transcript 稳定任务标记去重，取消精确到 prompt；只允许回环地址，不自动启动服务、不回退 TUI 自动化。
 - **OpenCode**：由官方 MCP 元数据提供真实 session ID，Hub 监督的连接器用官方 CLI 向该 session 投递，并以 session export 中的稳定任务标记处理恢复去重。
-- 连接器离线时明确失败，不静默回退 CLI；取消是协作式的，不承诺回滚已发生的文件修改。
+- 连接器离线时明确显示不可用，不静默回退 CLI；Agent 主程序或 daemon 未运行、系统重启后尚未重连属于预期离线，不计为投递失败。真实探测故障按未恢复事件去重，使用有上限的退避重试；取消是协作式的，不承诺回滚已发生的文件修改。
 
 ### 托盘与便携
 

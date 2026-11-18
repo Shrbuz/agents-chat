@@ -7,6 +7,7 @@ from pathlib import Path
 
 from bridge.client import Client
 from bridge.config import find_role, read_config
+from bridge.desktop_transport import ProbeBackoff
 from bridge.qwen import (QwenDaemonClient, classify_qwen_error, event_agent_text,
                          event_prompt_id, inspect_qwen_delivery)
 
@@ -177,6 +178,7 @@ def run_connector(state, agent):
     lock = SingleInstance(state / (agent.replace(".", "-") + "-desktop.lock"))
     client = Client(state)
     next_probe = 0.0
+    backoff = ProbeBackoff()
     try:
         endpoint = _role_endpoint(state, agent)
         daemon, cwd = _daemon(endpoint), endpoint["cwd"]
@@ -190,6 +192,7 @@ def run_connector(state, agent):
                 if time.monotonic() >= next_probe:
                     probe = daemon.probe(target["session_id"], cwd)
                     _report(client, agent, "ready")
+                    backoff.reset()
                     next_probe = time.monotonic() + 30
                 job = client.call("desktop_receive", agent=agent,
                                   session_id=target["session_id"], transport="qwen_native",
@@ -203,7 +206,7 @@ def run_connector(state, agent):
                 next_probe = 0
                 if (state / "connectors.stop").exists() or not (state / "endpoint.json").exists():
                     return
-                time.sleep(3)
+                time.sleep(backoff.failed())
     finally:
         lock.close()
 

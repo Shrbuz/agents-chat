@@ -8,7 +8,7 @@ import time
 import unittest
 
 from bridge.broker import Broker
-from bridge.desktop_transport import DesktopHub
+from bridge.desktop_transport import DesktopHub, ProbeBackoff
 from desktop_link import completed_result, completion_cursor, completed_read_result
 
 
@@ -36,6 +36,59 @@ class DesktopTests(unittest.TestCase):
         restored = DesktopHub(self.root)
         self.assertEqual(restored.bindings["qoder"]["session_id"], "chat-1")
         self.assertEqual(self.send()["mode"], "desktop_session")
+
+    def test_repeated_probe_failure_is_one_unresolved_episode(self):
+        hub = DesktopHub(self.root)
+        hub.bind("codex", {"session_id": "chat-1", "transport": "codex_app_tools"})
+        first = hub.report_transport(
+            "codex", "codex_app_tools", "pipe_missing",
+            error="pipe closed", failure_kind="pipe_missing")
+        second = hub.report_transport(
+            "codex", "codex_app_tools", "pipe_missing",
+            error="pipe still closed", failure_kind="pipe_missing")
+        self.assertEqual(first["consecutive_failures"], 1)
+        self.assertEqual(second["consecutive_failures"], 1)
+        self.assertEqual(first["first_failure_at"], second["first_failure_at"])
+        recovered = hub.report_transport("codex", "codex_app_tools", "ready")
+        self.assertEqual(recovered["consecutive_failures"], 0)
+        self.assertIsNone(recovered["first_failure_at"])
+
+    def test_expected_host_offline_does_not_count_as_failure(self):
+        hub = DesktopHub(self.root)
+        hub.bind("codex", {"session_id": "qwen-chat", "transport": "qwen_native"})
+        for _ in range(3):
+            status = hub.report_transport(
+                "codex", "qwen_native", "service_unavailable",
+                error="daemon is not running", failure_kind="qwen_daemon_unavailable")
+        self.assertEqual(status["consecutive_failures"], 0)
+        self.assertEqual(status["failure_kind"], "qwen_daemon_unavailable")
+        self.assertEqual(status["state"], "service_unavailable")
+
+    def test_legacy_probe_counts_are_collapsed_on_startup(self):
+        (self.root / "transport-status.json").write_text(json.dumps({
+            "qwen": {
+                "agent": "qwen", "transport": "qwen_native",
+                "state": "service_unavailable", "failure_kind": "qwen_daemon_unavailable",
+                "consecutive_failures": 62424, "updated_at": time.time(),
+            },
+            "codex": {
+                "agent": "codex", "transport": "codex_app_tools",
+                "state": "pipe_missing", "failure_kind": "pipe_missing",
+                "consecutive_failures": 1393, "updated_at": time.time(),
+            },
+        }), encoding="utf-8")
+        restored = DesktopHub(self.root)
+        self.assertEqual(restored.transport_status["qwen"]["consecutive_failures"], 0)
+        self.assertEqual(restored.transport_status["codex"]["consecutive_failures"], 1)
+        persisted = json.loads((self.root / "transport-status.json").read_text(encoding="utf-8"))
+        self.assertEqual(persisted["qwen"]["consecutive_failures"], 0)
+        self.assertEqual(persisted["codex"]["consecutive_failures"], 1)
+
+    def test_probe_backoff_is_bounded_and_resets(self):
+        backoff = ProbeBackoff()
+        self.assertEqual([backoff.failed() for _ in range(6)], [3, 6, 12, 24, 30, 30])
+        backoff.reset()
+        self.assertEqual(backoff.failed(), 3)
 
     def test_binding_cannot_redirect_accepted_work(self):
         self.send()

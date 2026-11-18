@@ -4,7 +4,7 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.8.1-blue)
+![Version](https://img.shields.io/badge/version-0.8.2-blue)
 
 Let several agent chats on one machine hand work to each other, return results automatically, and verify them. A role in a project (`leader`, `frontend`, `tester`, …) is a collaboration seat; tasks are routed by role, so nobody has to copy text between two chat windows.
 
@@ -337,6 +337,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 - Qwen Code's daemon is officially marked Experimental. Agents Chat therefore does not start it, create sessions, or select it as a default transport automatically; run `qwen serve` and bind an existing session explicitly. The default trusted-loopback API grants full execution authority to local processes, so do not expose it to an untrusted network.
 - Kimi Code's Server API is also Experimental. Only the maintained Node.js Kimi Code CLI is supported; the discontinued Python `kimi-cli` is not. `kimi_native` accepts only bearer-authenticated loopback servers and validates the live OpenAPI/AsyncAPI contract, exact session/workspace and model. A Kimi Code entitlement or usable provider remains the user's responsibility.
 - Desktop bindings depend on vendor-specific entry points; after an app update you may need to rebind or restart Qoder. Qwen/Kimi Code updates are capability-probed and become explicitly offline when their required protocol is absent.
+- An Agent host or daemon that is not running, or has not reconnected after a system restart, is reported as offline/unavailable instead of accumulating delivery failures. A real transport fault is displayed as one unresolved fault, probes use bounded backoff, and legacy counters are normalized during upgrade.
 - `install.sh` for macOS was only exercised under Git bash; a real Mac has not been verified yet.
 - Reproducible checks are recorded in [VERIFICATION.md](VERIFICATION.md).
 
@@ -348,7 +349,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 python install.py                                  # install to the default location
 python bridge.py --config config.local.json start  # run the hub from source
 python bridge.py status
-python -m unittest discover -s tests -v            # 179 tests
+python -m unittest discover -s tests -v            # 183 tests
 python build_exe.py                                # build tray and CLI
 python build_portable.py                           # build the portable archive
 ```

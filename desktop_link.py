@@ -13,7 +13,7 @@ from bridge.codex_connection import (capture_current_connection,
                                      discover_connection as discover_live_connection,
                                      select_connection, update_connection)
 from bridge.desktop_transport import (CodexDesktop, RECOVERABLE_CODEX_ERRORS,
-                                      classify_codex_error)
+                                      ProbeBackoff, classify_codex_error)
 
 ROOT = Path(__file__).resolve().parent
 
@@ -52,6 +52,7 @@ def run_connector(state, agent="codex"):
     connection = None
     connector_epoch = None
     next_probe = 0
+    backoff = ProbeBackoff()
     try:
         while True:
             if (state / "connectors.stop").exists():
@@ -65,7 +66,7 @@ def run_connector(state, agent="codex"):
                 if selected is None:
                     _report(client, agent, "offline", error="connection_context_missing",
                             failure_kind="connection_context_missing")
-                    time.sleep(3)
+                    time.sleep(backoff.failed())
                     continue
                 if (connection is None or selected["connection_id"] != connection.get("connection_id")
                         or time.monotonic() >= next_probe):
@@ -81,9 +82,10 @@ def run_connector(state, agent="codex"):
                         if report:
                             connector_epoch = report.get("connector_epoch", connector_epoch)
                         next_probe = time.monotonic() + 3
-                        time.sleep(3)
+                        time.sleep(backoff.failed())
                         continue
                     report = _report(client, agent, "ready", connection)
+                    backoff.reset()
                     if report:
                         connector_epoch = report.get("connector_epoch", connector_epoch)
                     next_probe = time.monotonic() + 40
@@ -103,7 +105,7 @@ def run_connector(state, agent="codex"):
                     return
                 if not (state / "endpoint.json").exists():
                     return
-                time.sleep(3)
+                time.sleep(backoff.failed())
     finally:
         lock.close()
 

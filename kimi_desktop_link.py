@@ -7,6 +7,7 @@ from pathlib import Path
 
 from bridge.client import Client
 from bridge.config import find_role, read_config
+from bridge.desktop_transport import ProbeBackoff
 from bridge.kimi import (KimiWebClient, classify_kimi_error, event_terminal_turn,
                          inspect_kimi_delivery)
 
@@ -177,6 +178,7 @@ def run_connector(state, agent):
     client = Client(state)
     next_probe = 0.0
     server = None
+    backoff = ProbeBackoff()
     try:
         endpoint = _role_endpoint(state, agent)
         cwd = endpoint["cwd"]
@@ -192,6 +194,7 @@ def run_connector(state, agent):
                 if time.monotonic() >= next_probe:
                     server.probe(target["session_id"], cwd)
                     _report(client, agent, "ready")
+                    backoff.reset()
                     next_probe = time.monotonic() + 30
                 job = client.call("desktop_receive", agent=agent,
                                   session_id=target["session_id"], transport="kimi_native",
@@ -207,7 +210,7 @@ def run_connector(state, agent):
                     server = None
                 if (state / "connectors.stop").exists() or not (state / "endpoint.json").exists():
                     return
-                time.sleep(3)
+                time.sleep(backoff.failed())
     finally:
         lock.close()
 

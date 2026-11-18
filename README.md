@@ -4,7 +4,7 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.8.1-blue)
+![Version](https://img.shields.io/badge/version-0.8.2-blue)
 
 让同一台机器上的多个 Agent 聊天互相派活、自动回传结果并验收。项目里的角色（`leader`、`frontend`、`tester`……）各自是一个协作席位，任务按角色路由，不需要人工在两个聊天窗口之间复制粘贴。
 
@@ -340,6 +340,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 - Qwen Code daemon 当前由官方标记为 Experimental，Agents Chat 因此不自动启动、不自动创建会话，也不把它当默认 transport；接入前必须显式运行 `qwen serve` 并绑定现有 session。默认 `127.0.0.1:4170` 的 trusted-loopback API 对同一用户进程具有完整执行权限，不要暴露到不可信网络。
 - Kimi Code Server API 同样是 Experimental；仅支持仍在维护的 Node.js Kimi Code CLI，不接入旧 Python `kimi-cli`。`kimi_native` 只接受 bearer 认证的回环服务并校验 live OpenAPI/AsyncAPI、精确 session/workspace 和模型；Kimi Code 会员或可用 provider 仍由用户提供。
 - 桌面绑定依赖厂商版本相关入口，更新桌面应用后可能需要重新绑定或重启 Qoder 原生连接；Qwen/Kimi Code 更新后会重新做 capability 探测，协议不满足时明确离线。
+- Agent 主程序、daemon 未启动或系统重启后尚未恢复时记为离线/不可用，不累计为投递失败；真实链路故障按“一个未恢复故障”展示，探测采用有上限的退避重试，旧版累计计数会在升级后自动归一化。
 - macOS 只在 Git bash 下验证过 `install.sh`，真实机器待验。
 - 可公开复现的检查记录见 [VERIFICATION.md](VERIFICATION.md)。
 
@@ -351,7 +352,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 python install.py                                  # 安装到默认位置
 python bridge.py --config config.local.json start  # 直接从源码起后台
 python bridge.py status
-python -m unittest discover -s tests -v            # 179 项测试
+python -m unittest discover -s tests -v            # 183 项测试
 python build_exe.py                                # 编译托盘与 CLI
 python build_portable.py                           # 生成便携包
 ```

@@ -1040,7 +1040,7 @@ namespace AgentsChatLauncher
             list.Columns.Add("模式", 128);
             list.Columns.Add("绑定会话", 200);
             list.Columns.Add("队列", 42);
-            list.Columns.Add("连续失败", 68);
+            list.Columns.Add("未恢复故障", 78);
             list.Columns.Add("最后投递", 108);
             list.Columns.Add("未唤醒结果", 82);
             list.Columns.Add("职责", 260);
@@ -1151,7 +1151,7 @@ namespace AgentsChatLauncher
                 && Convert.ToBoolean(health["degraded"]);
             Dictionary<string, object> transports = health == null ? null : TrayApp.Value(health, "transports");
             int pendingResultWakeups = 0;
-            int transportFailures = 0;
+            int degradedTransports = 0;
             if (transports != null)
             {
                 foreach (KeyValuePair<string, object> pair in transports)
@@ -1159,7 +1159,8 @@ namespace AgentsChatLauncher
                     Dictionary<string, object> item = pair.Value as Dictionary<string, object>;
                     if (item == null) continue;
                     pendingResultWakeups += TrayApp.Number(item, "pending_result_wakeups");
-                    transportFailures += TrayApp.Number(item, "consecutive_failures");
+                    if (item.ContainsKey("degraded") && Convert.ToBoolean(item["degraded"]))
+                        degradedTransports++;
                 }
             }
             summary.Text = "运行中 · " + projects + " 个项目 / " + roles + " 个角色 · 等待 "
@@ -1167,7 +1168,7 @@ namespace AgentsChatLauncher
                 + (states == null ? 0 : TrayApp.Number(states, "running"))
                 + (health != null && health.ContainsKey("version") ? " · v" + Convert.ToString(health["version"]) : "")
                 + (degraded ? " · ⚠ 传输/唤醒链路异常" : "")
-                + (transportFailures > 0 ? " · 传输连续失败 " + transportFailures : "")
+                + (degradedTransports > 0 ? " · 异常传输 " + degradedTransports : "")
                 + (pendingResultWakeups > 0 ? " · 未送达结果唤醒 " + pendingResultWakeups : "");
             summary.ForeColor = degraded ? Color.Firebrick : SystemColors.ControlText;
             Dictionary<string, object> rolesRoot = TrayApp.Value(status, "roles");
