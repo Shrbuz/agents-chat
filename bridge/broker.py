@@ -17,8 +17,9 @@ from .runtime import run_task
 from . import titles
 from .store import Store, TERMINAL, compact
 from .desktop_transport import DesktopHub
+from .codex_activity import CodexActivity
 from .agentchat_bridge import AgentChatBridge
-from .codex_connection import select_connection, update_connection
+from .codex_connection import active_connection_id, select_connection, update_connection
 from .collaboration import collaboration_mode, project_mode
 from .config import (ConfigError, adapter_for_transport, allowed_target, find_role, label,
                      normalize_config, projects_summary, read_config, session_id as config_session_id,
@@ -76,6 +77,9 @@ class Broker:
         self.recovered = self.store.recover()
         self.shutdown_callback = None
         self.desktop = DesktopHub(self.state_dir)
+        self.codex_activity = CodexActivity(self.desktop)
+        self.activity_thread = threading.Thread(target=self.codex_activity.run, args=(self.stop,),
+                                                name="codex-session-activity", daemon=True)
         self.agent_chat = AgentChatBridge(
             self.state_dir, config, self.store, self.notify_all,
             transport_online=lambda agent: self.role_transport_health(agent).get("online", False))
@@ -132,6 +136,7 @@ class Broker:
                 worker.start()
                 self.workers.append(worker)
         self.agent_chat.start()
+        self.activity_thread.start()
         self._ensure_desktop_connectors()
 
     def notify_all(self):
@@ -146,6 +151,8 @@ class Broker:
             pass
         self.agent_chat.close()
         self.desktop.close()
+        if self.activity_thread.is_alive():
+            self.activity_thread.join(timeout=6)
         with self.cv:
             self.cv.notify_all()
         for worker in self.workers:
@@ -708,6 +715,7 @@ class Broker:
             return {"health": self.call("health", {}), "roles": self.call("roles", {})}
         if method in ("roles", "projects", "role_list"):
             role_activity = self.role_activity()
+            codex_activity = self.codex_activity.snapshot(active_connection_id(self.state_dir))
             projects = projects_summary(self.config)
             for project in projects:
                 for role in project["roles"]:
@@ -718,6 +726,8 @@ class Broker:
                     role["desktop_wakeup"] = internal in self.desktop.bindings and not self.desktop_input_disabled(internal)
                     role["desktop_transport"] = self.desktop.bindings.get(internal, {}).get("transport")
                     role["session_id"] = self.desktop.bindings.get(internal, {}).get("session_id")
+                    if role["desktop_transport"] == "codex_app_tools":
+                        role["session_activity"] = codex_activity.get(role["session_id"], "unknown")
                     binding = self.desktop.bindings.get(internal, {})
                     role["session_title"] = titles.desktop_title(binding.get("transport"), binding.get("session_id"))
                     role["pending"] = self.store.has_pending(internal)

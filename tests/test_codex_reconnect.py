@@ -5,9 +5,11 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import Mock
 from pathlib import Path
 
 from bridge.broker import Broker
+from bridge.codex_activity import read_activity
 from bridge.codex_connection import load_registry, update_connection
 
 
@@ -83,6 +85,36 @@ class CodexReconnectTests(unittest.TestCase):
         self.assertTrue(after["transports"]["codex_app_tools"]["ok"])
         self.assertEqual(after["transports"]["codex_app_tools"]["consecutive_failures"], 0)
         self.assertIsNotNone(after["transports"]["codex_app_tools"]["last_success_at"])
+
+    def test_sidebar_activity_pages_match_exact_local_chats(self):
+        desktop = Mock()
+        desktop.call.side_effect = [
+            {"threads": [{"id": "old", "hostId": "remote", "status": "active"},
+                         {"id": "recent", "hostId": "local", "status": "active"},
+                         {"id": "unbound", "hostId": "local", "status": "idle"}],
+             "nextCursor": "page2"},
+            {"threads": [{"id": "old", "hostId": "local", "status": {"type": "idle"}}],
+             "nextCursor": "page3"}]
+        self.assertEqual(read_activity(desktop, {"old", "recent"}, threading.Event()),
+                         {"old": "idle", "recent": "active"})
+        self.assertEqual(desktop.call.call_count, 2)
+        self.assertEqual(desktop.call.call_args.args[1]["cursor"], "page2")
+
+    def test_role_activity_is_independent_of_tasks_and_expires(self):
+        generation = self.bind_codex_roles(self.connection(
+            r"\\.\pipe\codex-app-tools-A", self.node_a, "management"))
+        def leader():
+            roles = self.broker.call("roles", {})["projects"][0]["roles"]
+            return next(role for role in roles if role["role"] == "leader")
+        observer = self.broker.codex_activity
+        for state in ("active", "idle", "notLoaded"):
+            observer.latest = (generation, time.monotonic(), {"leader-chat": state})
+            role = leader()
+            self.assertEqual((role["session_activity"], role["running_tasks"]), (state, 0))
+        for gen, age, chat in ((generation, 20, "leader-chat"), ("old-host", 0, "leader-chat"),
+                               (generation, 0, "previous-chat")):
+            observer.latest = (gen, time.monotonic() - age, {chat: "active"})
+            self.assertEqual(leader()["session_activity"], "unknown")
 
     def test_concurrent_connection_updates_are_serialized(self):
         barrier = threading.Barrier(8)

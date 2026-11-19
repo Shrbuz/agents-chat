@@ -348,6 +348,7 @@ namespace AgentsChatLauncher
         internal string SessionTitle = "";
         internal string Description = "";
         internal string ConnectionState = "";
+        internal string SessionActivity = "";
         internal string LastError = "";
         internal bool Pending;
         internal bool Online;
@@ -368,8 +369,14 @@ namespace AgentsChatLauncher
 
         internal bool IsWorking
         {
-            get { return RunningTasks > 0 || ConnectionState == "busy"; }
+            get
+            {
+                if (Transport == "codex_app_tools") return SessionActivity == "active";
+                return RunningTasks > 0 || ConnectionState == "busy";
+            }
         }
+
+        internal bool IsWorkingSession { get { return SessionId.Length > 0 && IsWorking; } }
 
         internal bool IsOptionalUnbound
         {
@@ -413,6 +420,7 @@ namespace AgentsChatLauncher
             role.SessionTitle = StatusSnapshot.StringValue(data, "session_title");
             role.Description = StatusSnapshot.StringValue(data, "description");
             role.ConnectionState = StatusSnapshot.StringValue(data, "connection_status");
+            role.SessionActivity = StatusSnapshot.StringValue(data, "session_activity");
             role.Pending = StatusSnapshot.Bool(data, "pending");
             role.Online = StatusSnapshot.Bool(data, "online");
             role.Mismatch = StatusSnapshot.Bool(data, "adapter_transport_mismatch");
@@ -440,6 +448,11 @@ namespace AgentsChatLauncher
                 VisualState = TrayVisualState.Warning;
                 StateLabel = "配置不一致";
             }
+            else if (SessionActivity == "active")
+            {
+                VisualState = TrayVisualState.Busy;
+                StateLabel = "工作中";
+            }
             else if (FailureCount > 0 || PendingResultWakeups > 0 || IsConnectionError(ConnectionState))
             {
                 VisualState = TrayVisualState.Warning;
@@ -453,7 +466,8 @@ namespace AgentsChatLauncher
             else if (Online || ConnectionState == "ready")
             {
                 VisualState = TrayVisualState.Running;
-                StateLabel = QueuedTasks > 0 || Pending ? "待处理" : "在线";
+                StateLabel = QueuedTasks > 0 || Pending ? "待处理" :
+                    SessionActivity == "unknown" ? "活动未知" : "在线";
             }
             else
             {
@@ -881,16 +895,20 @@ namespace AgentsChatLauncher
             int summaryHeight = 72;
             int gap = 12;
             int metricWidth = (contentWidth - gap * 3) / 4;
+            List<RoleSnapshot> roles = ProjectRoles().ToList();
+            int queued = roles.Sum(role => role.QueuedTasks);
             DrawMetric(graphics, new Rectangle(contentX, summaryY, metricWidth, summaryHeight), "在线角色",
-                       Convert.ToString(snapshot.OnlineRoles), snapshot.TotalRoles + " 个角色", true);
-            DrawMetric(graphics, new Rectangle(contentX + (metricWidth + gap), summaryY, metricWidth, summaryHeight), "执行中",
-                       Convert.ToString(Math.Max(snapshot.BusyRoles, snapshot.RunningTasks)), BusyRoleName(), false);
+                       Convert.ToString(roles.Count(role => role.Online && !role.Mismatch && !role.IsOptionalUnbound)),
+                       roles.Count(role => !role.IsOptionalUnbound) + " 个角色", true);
+            DrawMetric(graphics, new Rectangle(contentX + (metricWidth + gap), summaryY, metricWidth, summaryHeight), "工作中会话",
+                       Convert.ToString(roles.Count(role => role.IsWorkingSession)),
+                       roles.Sum(role => role.RunningTasks) + " 项协作执行中", false);
             DrawMetric(graphics, new Rectangle(contentX + (metricWidth + gap) * 2, summaryY, metricWidth, summaryHeight), "等待任务",
-                       Convert.ToString(snapshot.Queued), snapshot.Queued == 0 ? "无待处理任务" : "等待角色处理", false);
+                       Convert.ToString(queued), queued == 0 ? "无待处理任务" : "等待角色处理", false);
             string linkNote = snapshot.PendingResultWakeups > 0
                 ? snapshot.PendingResultWakeups + " 个提醒待送达"
                 : snapshot.DegradedTransports > 0 ? snapshot.DegradedTransports + " 类传输异常" : "最近轮询";
-            DrawMetric(graphics, new Rectangle(contentX + (metricWidth + gap) * 3, summaryY, metricWidth, summaryHeight), "链路状态",
+            DrawMetric(graphics, new Rectangle(contentX + (metricWidth + gap) * 3, summaryY, metricWidth, summaryHeight), "中枢链路",
                        snapshot.Degraded ? "注意" : snapshot.Running ? "正常" : "离线",
                        linkNote, false);
 
@@ -909,10 +927,10 @@ namespace AgentsChatLauncher
             DrawDetail(graphics, detail);
         }
 
-        private string BusyRoleName()
+        private IEnumerable<RoleSnapshot> ProjectRoles()
         {
-            RoleSnapshot busy = snapshot.Roles.FirstOrDefault(role => role.IsWorking);
-            return busy == null ? "无活动会话" : busy.Role;
+            return selectedProject.Length == 0 ? snapshot.Roles :
+                snapshot.Projects.Where(project => project.Id == selectedProject).SelectMany(project => project.Roles);
         }
 
         private void DrawMetric(Graphics graphics, Rectangle bounds, string label, string value, string note, bool accent)
@@ -929,9 +947,7 @@ namespace AgentsChatLauncher
 
         private List<RoleSnapshot> VisibleRoles()
         {
-            IEnumerable<RoleSnapshot> roles = selectedProject.Length == 0 ? snapshot.Roles :
-                snapshot.Projects.Where(project => project.Id == selectedProject).SelectMany(project => project.Roles);
-            return roles.OrderBy(role => role.IsWorking ? 0 : role.VisualState == TrayVisualState.Warning ? 1 : role.VisualState == TrayVisualState.Running ? 2 : 3)
+            return ProjectRoles().OrderBy(role => role.IsWorking ? 0 : role.VisualState == TrayVisualState.Warning ? 1 : role.VisualState == TrayVisualState.Running ? 2 : 3)
                 .ThenBy(role => role.Role).Take(6).ToList();
         }
 
@@ -1316,7 +1332,7 @@ namespace AgentsChatLauncher
             y += 10;
             using (Pen pen = new Pen(RelayTheme.Line)) graphics.DrawLine(pen, bounds.X + 16, y, bounds.Right - 16, y);
             y += 14;
-            DrawDefinition(graphics, bounds, ref y, "任务", role.RunningTasks + " 工作中 / " + role.QueuedTasks + " 等待");
+            DrawDefinition(graphics, bounds, ref y, "协作任务", role.RunningTasks + " 执行中 / " + role.QueuedTasks + " 等待");
             DrawDefinition(graphics, bounds, ref y, "未恢复故障", Convert.ToString(role.FailureCount));
             DrawDefinition(graphics, bounds, ref y, "未唤醒结果", Convert.ToString(role.PendingResultWakeups));
             y += 10;
@@ -1563,8 +1579,8 @@ namespace AgentsChatLauncher
             int metricY = 58;
             int metricWidth = (Width - 48) / 3;
             DrawTrayMetric(graphics, new Rectangle(12, metricY, metricWidth, 54), Convert.ToString(snapshot.OnlineRoles), "在线角色");
-            DrawTrayMetric(graphics, new Rectangle(18 + metricWidth, metricY, metricWidth, 54), Convert.ToString(Math.Max(snapshot.BusyRoles, snapshot.RunningTasks)), "执行中");
-            DrawTrayMetric(graphics, new Rectangle(24 + metricWidth * 2, metricY, metricWidth, 54), Convert.ToString(snapshot.Queued), "等待任务");
+            DrawTrayMetric(graphics, new Rectangle(18 + metricWidth, metricY, metricWidth, 54), Convert.ToString(snapshot.Roles.Count(role => role.IsWorkingSession)), "工作中会话");
+            DrawTrayMetric(graphics, new Rectangle(24 + metricWidth * 2, metricY, metricWidth, 54), snapshot.RunningTasks + " / " + snapshot.Queued, "协作执行 / 等待");
             if (snapshot.Degraded)
             {
                 Rectangle warning = new Rectangle(12, 122, Width - 24, 40);
