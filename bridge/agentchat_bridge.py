@@ -408,6 +408,8 @@ class AgentChatBridge:
         for item in existing.values():
             if item["id"] in retried or item["state"] in ("queued", "running", "succeeded"):
                 continue
+            if (item.get("result") or {}).get("error") == "antigravity_delivery_uncertain":
+                continue
             self.store.requeue_wakeup(item["id"], {
                 "error": (item.get("result") or {}).get("error") or "wakeup_not_delivered",
                 "summary": "Wakeup is still required and will be retried.",

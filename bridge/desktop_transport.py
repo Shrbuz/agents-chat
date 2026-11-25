@@ -236,7 +236,7 @@ class DesktopHub:
             return epoch
 
     def report_transport(self, agent, transport, state, *, error=None, summary=None,
-                         connection_id=None, delivered=False, failure_kind=None):
+                         connection_id=None, delivered=False, failure_kind=None, session_id=None):
         allowed = {"ready", "busy", "reconnecting", "degraded", "offline",
                    "pipe_missing", "runtime_missing", "app_tools_server_missing",
                    "service_unavailable", "session_missing", "auth_required", "cli_missing"}
@@ -245,6 +245,8 @@ class DesktopHub:
         with self.cv:
             binding = self.bindings.get(agent) or {}
             if binding.get("transport") != transport:
+                raise ValueError("transport_report_binding_mismatch")
+            if transport == "antigravity_native" and binding.get("session_id") != session_id:
                 raise ValueError("transport_report_binding_mismatch")
             previous = self.transport_status.get(agent, {})
             now = time.time()
@@ -269,6 +271,8 @@ class DesktopHub:
                 "first_failure_at": first_failure,
                 "last_failure_at": last_failure,
             }
+            if session_id is not None:
+                item["observed_session_id"] = session_id
             if delivered:
                 item["last_success_at"] = now
                 item["consecutive_failures"] = 0
@@ -291,6 +295,8 @@ class DesktopHub:
         if not transport:
             return {"state": "unbound", "transport": None, "online": False}
         item = dict(self.transport_status.get(agent) or {})
+        if transport == "antigravity_native" and item.get("observed_session_id") != binding.get("session_id"):
+            return {"state": "reconnecting", "transport": transport, "online": False}
         item.setdefault("transport", transport)
         if transport == "codex_app_tools":
             problem = runtime_problem(self.state_dir, binding.get("session_id"))

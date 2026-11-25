@@ -105,6 +105,8 @@ def command_for(endpoint, run_dir):
         # value, which would expose collaboration task text in the process
         # list.  Project roles therefore require the exact-session native path.
         raise ValueError("kimi_native_requires_bound_session")
+    elif adapter == "antigravity":
+        raise ValueError("antigravity_requires_bound_desktop_session")
     elif adapter == "opencode":
         # With no positional message, the official CLI reads the bounded prompt
         # from stdin.  This also avoids exposing task text in the process list.

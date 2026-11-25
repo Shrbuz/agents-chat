@@ -159,6 +159,12 @@ kimi session list --cwd <项目目录> --json
 
 只有 `kimi status` 返回 `server.ready=true`、live OpenAPI/AsyncAPI 能力满足要求、workspace 与角色 cwd 一致、session 已配置模型，且接管的 `postconditions.ok=true`，才能宣告在线。Server API 是官方 Experimental 功能：不要自动启动 server、创建/猜测 session 或改成默认 transport。`kimi_native` 只允许 bearer 认证的回环服务；投递使用 `auto` permission override，必须把会话限制在用户信任的项目。套餐无 Kimi Code 权限时报告 `entitlement_required`，不要把“已登录”说成“可执行”。
 
+### Antigravity 桌面版会话
+
+Windows 上打开 Antigravity App 后，执行 `agents-chat antigravity setup`，由 Antigravity 托管 Sidecar。先用 `antigravity status --session <会话UUID> --root <角色工作目录>` 验证目标，再把 `adapter=antigravity` 的角色用 `join --role <角色> --transport antigravity_native --session <会话UUID>` 绑定到该会话。其他客户端的角色通过 `session migrate-and-takeover` 接管。
+
+派活用 `bus request --mode standard|strict`，会话被唤醒后按 `bus inbox`、`bus result`、`bus verify` 协作。普通提醒用 `notify`，投递成功只表示 Antigravity 已接受消息。停用用 `antigravity disable`。
+
 ## 总线模式下的完整流程
 
 ```powershell
@@ -230,7 +236,7 @@ kimi session list --cwd <项目目录> --json
     --session <当前会话ID> --transport codex_app_tools --adapter auto
 ```
 
-- transport 必须来自当前客户端：Codex = `codex_app_tools`，Qoder = `qoder_native`，Qwen Code = `qwen_native`，Kimi Code = `kimi_native`，OpenCode = `opencode_native`，DSH = `dsh_plugin`；`--adapter auto` 会据此推出 `codex` / `qoder` / `qwen` / `kimi` / `opencode` / `dsh`。
+- transport 必须来自当前客户端：Codex = `codex_app_tools`，Qoder = `qoder_native`，Qwen Code = `qwen_native`，Kimi Code = `kimi_native`，OpenCode = `opencode_native`，Antigravity App = `antigravity_native`，DSH = `dsh_plugin`。`--adapter auto` 根据 transport 选择适配器。
 - 任一步失败都会回滚配置、项目入口、绑定和旧会话；命令以非零退出，**不要**在同一个角色上补跑旧的 `session takeover`。
 - 成功返回 `adapter_changed`、`hub_restarted`、`active_session`、`retired_sessions`、`postconditions`。
 - 只换同客户端会话时 `adapter_changed=false`、`hub_restarted=false`，这是正确行为。

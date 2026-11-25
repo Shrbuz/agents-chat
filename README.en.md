@@ -4,7 +4,7 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.8.3-blue)
+![Version](https://img.shields.io/badge/version-0.8.4-blue)
 
 Let several agent chats on one machine hand work to each other, return results automatically, and verify them. A role in a project (`leader`, `frontend`, `tester`, …) is a collaboration seat; tasks are routed by role, so nobody has to copy text between two chat windows.
 
@@ -255,6 +255,21 @@ Roles run as independent CLI tasks by default. To deliver into an existing deskt
 - **Qwen Code (experimental, explicit opt-in)**: run `qwen serve` in the project and create a Web Shell session, then bind that real session ID with `qwen_native`. The connector uses Qwen's official REST/SSE API, subscribes before prompting, and correlates `turn_complete` / `turn_error` by `promptId`; it does not automate the page.
 - **Kimi Code (experimental, explicit opt-in)**: uses the maintained Node.js `@moonshot-ai/kimi-code`, not the discontinued Python `kimi-cli`. Log in and run `kimi web --no-open`, then bind a real session ID with `kimi_native`. The connector validates the live OpenAPI/AsyncAPI contract, exact workspace and configured model, subscribes with `subscribe_v2` before prompting, and correlates terminal turns by `triggerPromptId`. It accepts only bearer-authenticated loopback servers and never automates the TUI or desktop composer.
 - **OpenCode**: the official MCP host supplies the real current session ID and the `opencode_native` connector uses the official CLI to deliver into that exact session; no OAuth, app review or manual pull is required.
+- **Antigravity App (Windows)** wakes an existing desktop conversation for file-bus events and `notify` via Google's Sidecar and `agentapi send-message`. Tested on Antigravity App 2.35.1. [Google Sidecar docs](https://antigravity.google/docs/sidecars)
+
+### Connect Antigravity App
+
+Open and sign into Antigravity App, then select an existing conversation in the role's workspace. For a new Agents Chat project, include `--role agy:antigravity` in project setup.
+
+```powershell
+agents-chat antigravity setup
+agents-chat antigravity status --session <conversation-UUID> --root <role-workspace>
+agents-chat --project <project> join --role agy --transport antigravity_native --session <conversation-UUID>
+```
+
+To move an existing role from a different client, use `session migrate-and-takeover` with `--transport antigravity_native --adapter auto`. The App manages the Sidecar and the tray shows the role as offline after its heartbeat expires. Use `antigravity disable` to turn off this Hub's connector.
+
+Send work with `bus request --mode standard|strict`. The woken conversation reads its inbox and reports using `bus result`. The requester verifies the work through the bus. A successful `notify` confirms delivery.
 - **WorkBuddy**: local stdio MCP pull mode; run `workbuddy setup --project <project>` and new chats can claim work, return results and dispatch to peers.
 - **Claude Desktop / Claude Code (investigated, not currently supported)**: a local Windows Desktop Code session exposes a `local_...` host ID, its underlying Claude Code session ID and liveness, but the public CLI's `--desktop --resume` can only locate the session and cannot carry a prompt. Non-interactive `--resume --print` instead uses the standalone CLI's own authentication and provider, so it cannot reuse the Desktop host's authenticated session. Desktop has an internal cross-session `send_message`, but no public external call surface for it. Agents Chat therefore does not provide `claude_native`, setup, or UI automation disguised as native delivery; local MCP lets a Claude chat invoke tools, but does not let an external sender wake a specific chat.
 - **DSH**: bound automatically by the host plugin; `join` is not needed.
@@ -349,7 +364,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 python install.py                                  # install to the default location
 python bridge.py --config config.local.json start  # run the hub from source
 python bridge.py status
-python -m unittest discover -s tests -v            # 185 tests
+python -m unittest discover -s tests -v            # 188 tests
 python build_exe.py                                # build tray and CLI
 python build_portable.py                           # build the portable archive
 ```

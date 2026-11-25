@@ -19,6 +19,7 @@ from .store import Store, TERMINAL, compact
 from .desktop_transport import DesktopHub
 from .codex_activity import CodexActivity
 from .agentchat_bridge import AgentChatBridge
+from .antigravity import Probes as AntigravityProbes, TRANSPORT as ANTIGRAVITY_TRANSPORT
 from .codex_connection import active_connection_id, select_connection, update_connection
 from .collaboration import collaboration_mode, project_mode
 from .config import (ConfigError, adapter_for_transport, allowed_target, find_role, label,
@@ -77,6 +78,7 @@ class Broker:
         self.recovered = self.store.recover()
         self.shutdown_callback = None
         self.desktop = DesktopHub(self.state_dir)
+        self.antigravity = AntigravityProbes(self.stop)
         self.codex_activity = CodexActivity(self.desktop)
         self.activity_thread = threading.Thread(target=self.codex_activity.run, args=(self.stop,),
                                                 name="codex-session-activity", daemon=True)
@@ -203,6 +205,9 @@ class Broker:
                     state, result = "timed_out", {"error": "queue_deadline", "summary": "Expired before runtime launch."}
                 elif self.desktop_input_disabled(name):
                     state, result = "failed", {"error":"qoder_desktop_input_disabled", "summary":"Qoder input automation is disabled; this queued task was not delivered."}
+                elif endpoint["adapter"] == "antigravity" and name not in self.desktop.bindings:
+                    state, result = "failed", {"error": "antigravity_requires_bound_desktop_session",
+                                               "summary": "请先绑定 Antigravity 桌面会话。"}
                 elif endpoint["adapter"] == "dsh" and name not in self.desktop.bindings:
                     # DSH roles are served by the host plugin. Spawning a separate
                     # headless process is the old way and is no longer supported:
@@ -280,6 +285,8 @@ class Broker:
             return "desktop_mailbox"
         if internal in self.desktop.bindings:
             return "desktop_session"
+        if self.endpoints[internal]["adapter"] == "antigravity":
+            return "desktop_mailbox"
         return self.endpoints[internal].get("mode", "independent_cli_task")
 
     def active_sessions(self, project=None):
@@ -528,6 +535,11 @@ class Broker:
     def role_transport_health(self, internal):
         binding = self.desktop.bindings.get(internal) or {}
         transport = binding.get("transport")
+        if transport == ANTIGRAVITY_TRANSPORT and not self.antigravity.ready:
+            return {"transport": transport, "state": "offline", "online": False,
+                    "failure_kind": "antigravity_sidecar_offline"}
+        if transport == ANTIGRAVITY_TRANSPORT:
+            return self.desktop.connection_status(internal)
         if transport in ("codex_app_tools", "opencode_native", "qwen_native", "kimi_native"):
             return self.desktop.connection_status(internal)
         if not transport:
@@ -699,6 +711,7 @@ class Broker:
             }
             for transport in ("qoder_native", "qoder_accessibility", "qoder_extension", "dsh_plugin"):
                 transports[transport] = self.passive_transport_health(transport)
+            transports[ANTIGRAVITY_TRANSPORT] = self.passive_transport_health(ANTIGRAVITY_TRANSPORT)
             transport_degraded = any(item.get("degraded", False) for item in transports.values())
             return {"status": "running", "pid": os.getpid(), "mode": "multi_project_hub", "version": __version__,
                     "degraded": bool(agent_chat_health.get("degraded")
@@ -770,12 +783,30 @@ class Broker:
         if method == "connectors_start":
             self._ensure_desktop_connectors()
             return {"started": True}
+        if method == "antigravity_status":
+            return {"ready": self.antigravity.ready,
+                    "transport": self.passive_transport_health(ANTIGRAVITY_TRANSPORT)}
+        if method == "antigravity_poll":
+            probes = self.antigravity.poll()
+            roles = []
+            for agent, binding in list(self.desktop.bindings.items()):
+                endpoint = self.endpoints.get(agent)
+                if (binding.get("transport") == ANTIGRAVITY_TRANSPORT
+                        and endpoint and endpoint.get("enabled", True) and not self.binding_mismatch(agent)):
+                    roles.append({"agent": agent, "session_id": binding["session_id"], "cwd": endpoint["cwd"]})
+            return {"probes": probes, "roles": roles}
+        if method == "antigravity_probe":
+            return self.antigravity.request(p.get("session_id"), p["cwd"])
+        if method == "antigravity_probe_result":
+            self.antigravity.complete(p["id"], p["kind"])
+            return {"ok": True}
         if method == "transport_report":
             agent = self.resolve(p.get("agent"), p.get("project"), required=True)
             result = self.desktop.report_transport(
                 agent, p.get("transport"), p.get("state"), error=p.get("error"),
                 summary=p.get("summary"), connection_id=p.get("connection_id"),
-                delivered=bool(p.get("delivered", False)), failure_kind=p.get("failure_kind"))
+                delivered=bool(p.get("delivered", False)), failure_kind=p.get("failure_kind"),
+                session_id=p.get("session_id"))
             return {"status": result, "connector_epoch": self.desktop.connector_epoch(p.get("transport"))}
         if method == "desktop_bind":
             value = p.get("agent", p.get("role"))
@@ -807,6 +838,8 @@ class Broker:
                             "qoder_accessibility_project_role_unsupported: project roles require qoder_native")
             if chat and (self.store.session_retired("desktop:" + chat) or self.store.session_retired(chat)):
                 raise ValueError("session_retired: 这个会话已被用户结束，请先接管到另一个会话")
+            if chat and transport == ANTIGRAVITY_TRANSPORT:
+                chat = self.antigravity.request(chat, endpoint["cwd"])["session_id"]
             # Binding a role changes routing, so never redirect already accepted work.
             previous = self.desktop.bindings.get(internal)
             wanted = {"session_id": chat, "transport": transport} if chat else None
@@ -874,6 +907,8 @@ class Broker:
                     + "` to move the role to this client atomically")
             project_id, role_id = endpoint["project"], endpoint["role"]
             previous_binding = self.desktop.bindings.get(internal)
+            if transport == ANTIGRAVITY_TRANSPORT:
+                takeover_session = self.antigravity.request(takeover_session, endpoint["cwd"])["session_id"]
             sessions_before = self.store.session_snapshot(project_id, role_id)
             try:
                 with self.cv:
@@ -1039,6 +1074,11 @@ class Broker:
             kind = p.get("kind")
             if kind not in (None, "agent_chat_wakeup"):
                 raise ValueError("unknown_task_kind")
+            if target_endpoint["adapter"] == "antigravity":
+                if kind != "agent_chat_wakeup":
+                    raise ValueError("antigravity_requires_bus: use bus request for work or notify for a reminder")
+                if (self.desktop.bindings.get(target) or {}).get("transport") != ANTIGRAVITY_TRANSPORT:
+                    raise ValueError("antigravity_requires_bound_desktop_session")
             if mode == "strict" and kind != "agent_chat_wakeup":
                 raise ValueError(
                     "strict_mode_uses_bus: create a durable bus request with acceptance criteria, "

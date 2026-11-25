@@ -199,6 +199,9 @@ def _require_qoder_native(state):
 
 
 def _resolve_target_session(state, adapter, session, transport=None, cwd=None):
+    if transport == "antigravity_native":
+        from .antigravity import conversation_id
+        return conversation_id(session)
     if transport == "qoder_native":
         # An explicit session id proves only that a chat once existed.  Require
         # the native extension heartbeat as well so join/takeover cannot report
@@ -521,6 +524,8 @@ def migrate_and_takeover(state, config, project, role, session=None, transport=N
         return result
 
     # Fail before writing anything if the target runtime cannot be built at all.
+    if transport == "antigravity_native":
+        client.call("antigravity_probe", session_id=session, cwd=endpoint["cwd"])
     _migrated_endpoint(endpoint, target_adapter, command, args)
 
     config_text = config.read_text(encoding="utf-8")
@@ -744,6 +749,9 @@ def join_role(state, config, project, role, session=None, transport=None,
             warning = "codex_connector_context_missing: register another live Codex desktop chat"
         else:
             start_desktop_connectors(state, config)
+    note = ("The desktop chat receives mailbox wakeups; use bus result to report work."
+            if transport == "antigravity_native" else
+            "The desktop chat is now the execution target for this role; result returns to the sender inbox.")
     return {"joined": True, "address": internal, "session_id": session,
             "transport": transport, "adapter": role_adapter,
             "adapter_changed": False, "hub_restarted": False,
@@ -751,7 +759,7 @@ def join_role(state, config, project, role, session=None, transport=None,
             "retired_sessions": postconditions["retired_sessions"],
             "mode": result.get("mode"), "warning": warning,
             "postconditions": postconditions,
-            "note": "The desktop chat is now the execution target for this role; result returns to the sender inbox."}
+            "note": note}
 
 
 def _role_specs(values, default_adapter="codex"):
@@ -1030,6 +1038,13 @@ def parser():
     kimi_status_parser.add_argument("--session")
     kimi_status_parser.add_argument("--root")
     kimi_status_parser.add_argument("--url")
+    antigravity = sub.add_parser("antigravity", help="Connect Antigravity App through its official Sidecar")
+    antigravity_sub = antigravity.add_subparsers(dest="antigravity_command", required=True)
+    antigravity_sub.add_parser("setup", help="Enable this Hub's connector in Antigravity App")
+    antigravity_sub.add_parser("disable", help="Disable this Hub's connector in Antigravity App")
+    antigravity_status = antigravity_sub.add_parser("status")
+    antigravity_status.add_argument("--session", help="Check the exact desktop conversation UUID")
+    antigravity_status.add_argument("--root", help="Expected workspace path (defaults to the current directory)")
     return p
 
 
@@ -1181,6 +1196,15 @@ def main():
             normalized = read_config(config)
             result["roles"] = [address for address, endpoint in normalized["endpoints"].items()
                                if endpoint["adapter"] == "kimi"]
+        elif args.command == "antigravity":
+            if args.antigravity_command == "status":
+                result = client.call("antigravity_status")
+                if args.session:
+                    result["session"] = client.call("antigravity_probe", session_id=args.session,
+                                                    cwd=str(Path(args.root or ".").resolve()))
+            else:
+                from .antigravity import configure_sidecar
+                result = configure_sidecar(state, args.antigravity_command == "setup")
         else:
             raise ValueError("unknown_command")
         print(compact(result))

@@ -65,6 +65,9 @@ def discover_command(adapter):
     if adapter == "kimi":
         from .kimi import discover_kimi_command
         return discover_kimi_command()
+    if adapter == "antigravity":
+        from .antigravity import agentapi_command
+        return agentapi_command()
     if adapter == "dsh":
         # `dsh` is a cmd wrapper around the Electron launcher; the config layer
         # rejects shell wrappers, so resolve the native executable and its entry

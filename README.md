@@ -4,13 +4,13 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.8.3-blue)
+![Version](https://img.shields.io/badge/version-0.8.4-blue)
 
 让同一台机器上的多个 Agent 聊天互相派活、自动回传结果并验收。项目里的角色（`leader`、`frontend`、`tester`……）各自是一个协作席位，任务按角色路由，不需要人工在两个聊天窗口之间复制粘贴。
 
 - **本地优先**：中枢只监听 `127.0.0.1`，数据存在本地 SQLite 与 JSON 文件里
 - **按需启动**：不设开机自启；用到它的会话自己拉起后台
-- **看得见**：任务可以投进你正在用的 Codex / Qoder / Qwen Code / Kimi Code / OpenCode / DSH 聊天；WorkBuddy 通过本地 MCP 参与收发
+- **看得见**：任务可推到正在使用的 Codex / Qoder / Qwen Code / Kimi Code / OpenCode / DSH 聊天。Antigravity 桌面版可自动唤醒文件总线任务，WorkBuddy 通过本地 MCP 参与收发。
 
 ---
 
@@ -203,7 +203,7 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
     --session <当前会话ID> --transport codex_app_tools --adapter auto
 ```
 
-- `--adapter auto` 按 transport 推导：`codex_app_tools→codex`、`qoder_native→qoder`、`qwen_native→qwen`、`kimi_native→kimi`、`opencode_native→opencode`、`dsh_plugin→dsh`。
+- `--adapter auto` 按 transport 推导：`codex_app_tools→codex`、`qoder_native→qoder`、`qwen_native→qwen`、`kimi_native→kimi`、`opencode_native→opencode`、`antigravity_native→antigravity`、`dsh_plugin→dsh`。
 - 迁移依次完成：主配置 → `.agents-chat/project.json` → 重启中枢 → 绑定新会话 → 退休旧会话 → 更新 `active-sessions`；任一步失败会回滚。
 - 返回 `adapter_changed`、`hub_restarted`、`active_session`、`retired_sessions`、`postconditions`。
 - 旧 `session takeover` 在 adapter/transport 不一致时返回 `adapter_transport_mismatch`，不会再留下半迁移状态。
@@ -257,6 +257,21 @@ $cli = "$env:LOCALAPPDATA\Programs\AgentsChat\AgentsChat.Cli.exe"
 - **Qwen Code（实验性、显式启用）**：先在项目目录运行 `qwen serve` 并在 Web Shell 创建会话，再用 `qwen_native` 绑定该真实 session ID。连接器走 Qwen 官方 REST/SSE，先订阅事件再投递，按 `promptId` 关联 `turn_complete` / `turn_error`，不操作页面。
 - **Kimi Code（实验性、显式启用）**：使用仍在维护的 Node.js 版 `@moonshot-ai/kimi-code`，不是已停止维护的旧 Python `kimi-cli`。用户先登录并运行 `kimi web --no-open`，再用 `kimi_native` 绑定真实 session ID；连接器校验 live OpenAPI/AsyncAPI、精确 workspace 与已配置模型，先 `subscribe_v2` 再投递，并按 `triggerPromptId` 关联终态。仅允许 bearer 认证的回环地址，不操作 TUI/桌面输入框。
 - **OpenCode**：官方 MCP 提供当前真实 session ID，`opencode_native` 连接器用官方 CLI 把任务投进这个会话；无需 OAuth、审核或手工 pull。
+- **Antigravity 桌面版**：通过 Google 官方 Sidecar 和 `agentapi send-message` 唤醒已有会话。支持文件总线任务和 `notify`，以 Windows 桌面版 2.35.1 实测。
+
+### 接入 Antigravity 桌面版
+
+打开并登录 Antigravity App，在与角色工作目录一致的项目中准备一个已有会话。新项目可在 `setup` 中指定 `--role agy:antigravity`。在已配置文件总线的项目中，使用总线中已定义的角色，再将该角色绑定或接管到 Antigravity。
+
+```powershell
+agents-chat antigravity setup
+agents-chat antigravity status --session <会话UUID> --root <角色工作目录>
+agents-chat --project <项目ID> join --role agy --transport antigravity_native --session <会话UUID>
+```
+
+已有角色换客户端时，使用 `session migrate-and-takeover --role <角色> --transport antigravity_native --session <会话UUID> --adapter auto`。Sidecar 由 Antigravity App 启动，正常打开 App 即可。中枢按 ID 和工作目录校验会话，宿主退出后托盘显示离线。`agents-chat antigravity disable` 可停用本中枢的 Sidecar。参考 [Google Sidecar 文档](https://antigravity.google/docs/sidecars)。
+
+用 `bus request --mode standard|strict` 派活，目标会话被唤醒后用 `bus inbox` 读任务、用 `bus result` 回报。发起方用 `bus verify` 验收。`notify` 的成功回执只确认投递，Antigravity 角色的任务直接使用文件总线。
 - **WorkBuddy**：本地 stdio MCP 拉取模式；运行 `workbuddy setup --project <项目>` 后，新聊天可领取任务、回传结果并给其他角色派活。
 - **Trae（暂不支持）**：Trae 支持 MCP、Skill 与 VSIX，但当前没有公开接口可定位真实聊天、向指定既有聊天主动投递消息并观察本轮完成；只能做需要聊天主动领取任务的 `mcp_pull`，体验不符合桌面聊天绑定目标，因此暂不提供 adapter、setup 或伪装成原生唤醒。
 - **Claude Desktop / Claude Code（已调查、暂不支持）**：Windows Desktop 的本地 Code 会话会暴露 `local_...` 宿主 ID、底层 Claude Code session ID 与在线状态，但公开 CLI 的 `--desktop --resume` 只能定位会话，不能携带 prompt；非交互 `--resume --print` 又使用独立 CLI 的登录态与 provider，不能复用 Desktop 会话的宿主认证。Desktop 内部虽有跨会话 `send_message`，目前没有公开给外部程序的调用入口。Agents Chat 因此不提供 `claude_native`、setup 或 UI 自动化伪装；本地 MCP 只能让 Claude 会话主动调用工具，不等于外部唤醒指定会话。
@@ -352,7 +367,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Programs\
 python install.py                                  # 安装到默认位置
 python bridge.py --config config.local.json start  # 直接从源码起后台
 python bridge.py status
-python -m unittest discover -s tests -v            # 185 项测试
+python -m unittest discover -s tests -v            # 188 项测试
 python build_exe.py                                # 编译托盘与 CLI
 python build_portable.py                           # 生成便携包
 ```

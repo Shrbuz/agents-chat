@@ -189,7 +189,7 @@ def main():
         if not wait_for_broker_stop(state):
             raise SystemExit("旧服务尚未退出，安装已停止。")
     destination.mkdir(parents=True, exist_ok=True)
-    for filename in ["bridge.py", "desktop.py", "desktop_link.py", "opencode_desktop_link.py", "qwen_desktop_link.py", "kimi_desktop_link.py", "qoder_desktop_link.py", "launch_qoder_native.py",
+    for filename in ["bridge.py", "desktop.py", "desktop_link.py", "opencode_desktop_link.py", "qwen_desktop_link.py", "kimi_desktop_link.py", "qoder_desktop_link.py", "antigravity_desktop_link.py", "launch_qoder_native.py",
                      "uninstall.py", "login_qoder.py", "README.md", "DESIGN.md", "INTEGRATION.md", "VERIFICATION.md",
                      "HANDOFF.md", "install.ps1", "uninstall.ps1", "LICENSE", "VERSION"]:
         if (ROOT / filename).is_file():
