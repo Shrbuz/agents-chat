@@ -98,7 +98,9 @@ class AntigravityTests(unittest.TestCase):
         job = broker.call("desktop_receive", {**target, "seconds": 10})
         self.assertIsNotNone(job)
         self.assertTrue(job["notify"])
-        self.assertIn(SESSION, job["prompt"])
+        self.assertEqual(job["session_id"], SESSION)
+        self.assertIn("inbox", job["prompt"])
+        self.assertIn(f"'bus' 'inbox' '--role' 'desktop' '--session' '{SESSION}'", job["prompt"])
         client = Mock(state_dir=broker.state_dir, call=lambda method, **params: broker.call(method, params))
         with patch("bridge.antigravity.call_agentapi",
                    return_value={"sendMessage": {"recipientId": SESSION}}) as api:

@@ -4,7 +4,7 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.8.4-blue)
+![Version](https://img.shields.io/badge/version-0.8.5-blue)
 
 让同一台机器上的多个 Agent 聊天互相派活、自动回传结果并验收。项目里的角色（`leader`、`frontend`、`tester`……）各自是一个协作席位，任务按角色路由，不需要人工在两个聊天窗口之间复制粘贴。
 

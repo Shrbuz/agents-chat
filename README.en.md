@@ -4,7 +4,7 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.8.4-blue)
+![Version](https://img.shields.io/badge/version-0.8.5-blue)
 
 Let several agent chats on one machine hand work to each other, return results automatically, and verify them. A role in a project (`leader`, `frontend`, `tester`, …) is a collaboration seat; tasks are routed by role, so nobody has to copy text between two chat windows.
 

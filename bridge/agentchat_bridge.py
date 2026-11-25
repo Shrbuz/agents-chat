@@ -580,8 +580,6 @@ class AgentChatBridge:
         acceptance only burns tokens. The session name is filled in from the
         role's bound chat when we know it, so nothing has to be guessed.
         """
-        helper = project["helper"]
-        session = self._bus_session(project, bus_role) or f"{bus_role}-1"
         # The action depends on the event: only a request wants a claim, and only
         # a result wants a verify. Saying "领取" for a result is simply wrong.
         mode = (event.get("data") or {}).get("collaboration_mode", "standard")
@@ -601,11 +599,7 @@ class AgentChatBridge:
             "reassign": "任务已被发起方收回，请停止手上的工作。",
         }.get(action, "去收件箱查看。")
         head = f"Agents Chat 收件箱有你的新消息（{action}，task {str(event.get('task_id'))[:8]}）。{hint}"
-        if not helper:
-            return head + "\n用项目内的 agent-chat helper 执行 inbox/claim/result/verify。"
-        return (head + "\n"
-                f'python "{helper}" --project "{project["root"]}" inbox '
-                f'--role {bus_role} --session {session}')
+        return head + "\n" + self._inbox_instruction(project, bus_role, role)
 
     def _prompt_batch(self, project, bus_role, role, selected):
         """One concise inbox pointer for all actionable events in this scan."""
@@ -618,15 +612,25 @@ class AgentChatBridge:
         summary = "、".join(tasks[:8])
         if len(tasks) > 8:
             summary += f"，另 {len(tasks) - 8} 项"
-        session = self._bus_session(project, bus_role) or f"{bus_role}-1"
         head = (f"Agents Chat 收件箱本轮有 {len(selected)} 条需要处理的消息，"
                 f"已合并为一条摘要：{summary}。请先读取 inbox，并按任务当前状态处理；"
                 "已关闭任务无需回复。")
+        return head + "\n" + self._inbox_instruction(project, bus_role, role)
+
+    def _inbox_instruction(self, project, bus_role, role):
+        session = self._bus_session(project, bus_role) or f"{bus_role}-1"
+        if self.config["endpoints"][role["address"]]["adapter"] == "antigravity":
+            root = Path(__file__).resolve().parents[1]
+            cli = root / "AgentsChat.Cli.exe"
+            command = [cli] if cli.is_file() else [sys.executable, root / "bridge.py"]
+            command += ["--config", self.config["config_path"], "--state", self.state,
+                        "--project", project["id"], "bus", "inbox", "--role", bus_role,
+                        "--session", session]
+            return "& " + " ".join("'" + str(arg).replace("'", "''") + "'" for arg in command)
         helper = project["helper"]
         if not helper:
-            return head + "\n用项目内的 agent-chat helper 执行 inbox/claim/result/verify。"
-        return (head + "\n"
-                f'python "{helper}" --project "{project["root"]}" inbox '
+            return "用项目内的 agent-chat helper 执行 inbox/claim/result/verify。"
+        return (f'python "{helper}" --project "{project["root"]}" inbox '
                 f'--role {bus_role} --session {session}')
 
     def prepare_wakeup(self, queue_task):
