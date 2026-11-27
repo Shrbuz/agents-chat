@@ -114,7 +114,8 @@ def write_support_files(destination):
 这是自带 Python 运行时的 Windows 便携目录。解压后直接双击 `AgentsChat.exe`：
 
 - 程序进入系统托盘，并自动启动本地后台。
-- 双击托盘图标或再次运行 `AgentsChat.exe ui` 可打开状态窗口。
+- 桌面侧边显示项目悬浮岛。悬停项目徽章查看角色与纸团消息，点动物进入详情。
+- 收起后，双击托盘图标或运行 `AgentsChat.exe ui` 可重新显示悬浮岛。
 - 不需要安装 Python、Node、pip，也没有管理员权限要求。
 
 ## 让 Agent 自己完成会话配置

@@ -4,7 +4,7 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.8.5-blue)
+![Version](https://img.shields.io/badge/version-0.8.6-blue)
 
 让同一台机器上的多个 Agent 聊天互相派活、自动回传结果并验收。项目里的角色（`leader`、`frontend`、`tester`……）各自是一个协作席位，任务按角色路由，不需要人工在两个聊天窗口之间复制粘贴。
 
@@ -312,10 +312,13 @@ stdio MCP 暴露任务收发、查询、注册以及拉取执行工具。OpenCod
 
 ## 托盘与便携版
 
-- `AgentsChat.exe`：系统托盘宿主，启动后拉起本地后台；双击打开状态窗口（带列头的角色表格、真实聊天名、启停按钮）。
+- 启动 `AgentsChat.exe` 后，桌面侧边的悬浮岛会纵向列出项目徽章。悬停徽章展开角色，工作中的小动物会动笔，圆弧标出有成员在工作的项目。
+- 右键项目徽章或角色小动物，选择「更换项目图标」或「更换角色图标」即可按预览挑选。多个项目可以用同一枚徽章，多个角色也可以用同一种动物。选择会保存在本机，可随时从同一菜单恢复自动分配。
+- 角色之间的新协作消息会触发纸团动画。底部显示最近一条的发送方、接收方、动作和时间。点动物打开该角色的会话详情。
+- 按住岛顶把手或项目徽章拖动，悬浮岛会跟随鼠标。松手时，它会滑到鼠标所在显示器的左侧或右侧边缘，并记住高度。项目较多时可滚动徽章，角色较多时可点击左右箭头翻页。右键可收起悬浮岛，双击系统托盘图标可重新显示。
 - `AgentsChat.Cli.exe`：Agent 与脚本使用的命令入口，同一目录也提供 stdio MCP。
 - 便携版由 `python build_portable.py` 生成 `dist/AgentsChat-Portable/` 与 zip，自带 Python 嵌入式运行时，解压即用。
-- 托盘只做三件事：启停后台、展示状态、打开配置/数据目录。本机空闲实测约：托盘 41 MB、后台 29 MB，空闲不调用模型。
+- 托盘菜单仍可启停后台和打开配置、数据目录。动画读取 Hub 状态，空闲时不调用模型。
 
 ---
 

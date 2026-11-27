@@ -3,12 +3,14 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import uuid
+from contextlib import closing
 from pathlib import Path
 from urllib.parse import urlsplit
 from urllib.request import url2pathname
@@ -18,6 +20,34 @@ from .client import Client
 
 TRANSPORT = "antigravity_native"
 HEARTBEAT_TTL = 20
+
+
+def read_activity(sessions, database=None):
+    """Read only the bound root conversations from Antigravity's local sidebar summaries."""
+    if not sessions:
+        return {}
+    database = database or Path.home() / ".gemini/antigravity/conversation_summaries.db"
+    states = {}
+    try:
+        with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True, timeout=0.05)) as db:
+            ids = list(sessions)
+            for i in range(0, len(ids), 500):
+                batch = ids[i:i + 500]
+                marks = ",".join("?" for _ in batch)
+                rows = db.execute(
+                    f"SELECT conversation_id, status, not_fully_idle, killed FROM conversation_summaries "
+                    f"WHERE conversation_id IN ({marks}) AND COALESCE(parent_conversation_id, '') = ''", batch)
+                for session, status, not_idle, killed in rows:
+                    if killed:
+                        states[session] = "idle"
+                    elif status in ("CASCADE_RUN_STATUS_RUNNING", "CASCADE_RUN_STATUS_BUSY",
+                                    "CASCADE_RUN_STATUS_CANCELING") or not_idle:
+                        states[session] = "active"
+                    elif status == "CASCADE_RUN_STATUS_IDLE":
+                        states[session] = "idle"
+    except (OSError, sqlite3.Error):
+        return {}
+    return states
 
 
 def conversation_id(value):

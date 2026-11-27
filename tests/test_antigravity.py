@@ -1,4 +1,5 @@
 import json
+import sqlite3
 import sys
 import tempfile
 import time
@@ -8,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from bridge.antigravity import deliver, probe_session, TRANSPORT
+from bridge.antigravity import deliver, probe_session, read_activity, TRANSPORT
 from bridge.broker import Broker
 from bridge.bus import Bus
 
@@ -35,6 +36,33 @@ class AntigravityTests(unittest.TestCase):
             self.assertEqual(probe_session([], SESSION, self.root), "antigravity_workspace_mismatch")
             metadata["parentConversationId"] = str(uuid.uuid4())
             self.assertEqual(probe_session([], SESSION, workspace), "antigravity_session_missing")
+
+    def test_activity_tracks_committed_host_state_for_each_bound_root(self):
+        db_path = self.root / "conversation_summaries.db"
+        other = str(uuid.uuid4())
+        child = str(uuid.uuid4())
+        sessions = [SESSION, other, child]
+        self.assertEqual(read_activity(sessions, db_path), {})
+        self.assertFalse(db_path.exists())
+        db = sqlite3.connect(db_path)
+        self.addCleanup(db.close)
+        db.execute("PRAGMA journal_mode=WAL")
+        db.execute("CREATE TABLE conversation_summaries (conversation_id TEXT PRIMARY KEY, "
+                   "parent_conversation_id TEXT, status TEXT, not_fully_idle INTEGER, killed INTEGER)")
+        db.executemany("INSERT INTO conversation_summaries VALUES (?,?,?,?,?)", [
+            (s, parent, "CASCADE_RUN_STATUS_RUNNING", 1, 0)
+            for s, parent in [(SESSION, ""), (other, ""), (child, SESSION), (str(uuid.uuid4()), "")]])
+        db.commit()
+        self.assertEqual(read_activity(sessions, db_path), {SESSION: "active", other: "active"})
+        for status, background, killed, expected in [
+                ("IDLE", 0, 0, "idle"), ("IDLE", 1, 0, "active"), ("BUSY", 0, 0, "active"),
+                ("CANCELING", 0, 0, "active"), ("RUNNING", 1, 1, "idle"), ("UNSPECIFIED", 0, 0, None)]:
+            db.execute("UPDATE conversation_summaries SET status=?, not_fully_idle=?, killed=? "
+                       "WHERE conversation_id=?", ("CASCADE_RUN_STATUS_" + status, background, killed, SESSION))
+            db.commit()
+            result = read_activity(sessions, db_path)
+            self.assertEqual(result.get(SESSION), expected)
+            self.assertEqual(result[other], "active")
 
     def test_receipts_prevent_replay_after_success_or_ambiguous_failure(self):
         client = Mock(state_dir=self.root)
@@ -87,6 +115,12 @@ class AntigravityTests(unittest.TestCase):
             self.assertEqual(binding.result()["session_id"], SESSION)
         broker.call("transport_report", {**target, "state": "ready"})
         self.assertTrue(broker.role_transport_health("demo.desktop")["online"])
+        with patch("bridge.broker.read_antigravity_activity", return_value={SESSION: "active"}) as read:
+            self.assertEqual(broker.call("antigravity_activity", {}), {SESSION: "active"})
+            read.assert_called_once_with({SESSION})
+            role = next(r for r in broker.call("status", {})["roles"]["projects"][0]["roles"]
+                        if r["role"] == "desktop")
+            self.assertEqual((role["session_activity"], role["running_tasks"]), ("active", 0))
         with self.assertRaisesRegex(ValueError, "antigravity_requires_bus"):
             broker.call("send", {"sender": "demo.leader", "target": "demo.desktop",
                                  "prompt": "work", "key": "direct"})
@@ -117,6 +151,7 @@ class AntigravityTests(unittest.TestCase):
         self.assertEqual(verified["task"]["status"], "closed")
         broker.antigravity.seen = float("-inf")
         self.assertFalse(broker.role_transport_health("demo.desktop")["online"])
+        self.assertEqual(broker.call("antigravity_activity", {}), {})
 
 
 if __name__ == "__main__":

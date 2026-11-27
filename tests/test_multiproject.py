@@ -130,7 +130,10 @@ class HubTests(unittest.TestCase):
         sent = self.broker.call("send", {"sender": "alpha.backend", "target": "beta.frontend",
                                           "prompt": "topology", "key": "topology-1", "timeout": 10})
         self.broker.call("wait", {"task_id": sent["task_id"], "seconds": 10})
-        projects = self.broker.call("roles", {})["projects"]
+        status = self.broker.call("roles", {})
+        self.assertEqual([(m["sender"], m["recipient"], m["kind"]) for m in status["traffic"]], [
+            ("alpha.backend", "beta.frontend", "request"), ("beta.frontend", "alpha.backend", "result")])
+        projects = status["projects"]
         roles = {role["address"]: role for project in projects for role in project["roles"]}
         self.assertTrue(roles["alpha.backend"]["last_send_event_id"].startswith("queue:"))
         self.assertTrue(roles["alpha.backend"]["last_receive_event_id"].startswith("queue:"))

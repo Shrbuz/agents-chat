@@ -252,6 +252,7 @@ namespace AgentsChatLauncher
         internal int PendingResultWakeups;
         internal string Version = "";
         internal readonly List<ProjectSnapshot> Projects = new List<ProjectSnapshot>();
+        internal readonly List<IslandMessage> Traffic = new List<IslandMessage>();
 
         internal IEnumerable<RoleSnapshot> Roles
         {
@@ -289,6 +290,13 @@ namespace AgentsChatLauncher
                 }
             }
             Dictionary<string, object> rolesRoot = TrayApp.Value(status, "roles");
+            object traffic;
+            if (rolesRoot != null && rolesRoot.TryGetValue("traffic", out traffic))
+                foreach (object item in TrayApp.Sequence(traffic))
+                {
+                    IslandMessage message = IslandMessage.From(item as Dictionary<string, object>);
+                    if (message != null) snapshot.Traffic.Add(message);
+                }
             object projectsValue = rolesRoot != null && rolesRoot.ContainsKey("projects") ? rolesRoot["projects"] : null;
             foreach (object projectValue in TrayApp.Sequence(projectsValue))
             {
@@ -366,11 +374,14 @@ namespace AgentsChatLauncher
         internal string LastReceiveKind = "";
         internal TrayVisualState VisualState;
         internal string StateLabel = "";
+        internal string IslandLabel = "";
 
         internal bool IsWorking
         {
             get
             {
+                if (Mismatch) return false;
+                if (Transport == "antigravity_native") return Online && SessionActivity == "active";
                 if (Transport == "codex_app_tools") return SessionActivity == "active";
                 return RunningTasks > 0 || ConnectionState == "busy";
             }
@@ -421,6 +432,8 @@ namespace AgentsChatLauncher
             role.Description = StatusSnapshot.StringValue(data, "description");
             role.ConnectionState = StatusSnapshot.StringValue(data, "connection_status");
             role.SessionActivity = StatusSnapshot.StringValue(data, "session_activity");
+            if (role.Transport == "antigravity_native" && role.SessionActivity == "")
+                role.SessionActivity = "unknown";
             role.Pending = StatusSnapshot.Bool(data, "pending");
             role.Online = StatusSnapshot.Bool(data, "online");
             role.Mismatch = StatusSnapshot.Bool(data, "adapter_transport_mismatch");
@@ -441,60 +454,78 @@ namespace AgentsChatLauncher
             return role;
         }
 
+        internal bool UpdateAntigravityActivity(Dictionary<string, object> observations)
+        {
+            if (Transport != "antigravity_native" || !Online || Mismatch) return false;
+            string activity = StatusSnapshot.StringValue(observations, SessionId);
+            if (activity != "active" && activity != "idle") activity = "unknown";
+            if (SessionActivity == activity) return false;
+            SessionActivity = activity;
+            ResolveState();
+            return true;
+        }
         private void ResolveState()
         {
             if (Mismatch)
             {
                 VisualState = TrayVisualState.Warning;
                 StateLabel = "配置不一致";
+                IslandLabel = "走错工位";
             }
-            else if (SessionActivity == "active")
+            else if (SessionActivity == "active" && IsWorking)
             {
                 VisualState = TrayVisualState.Busy;
                 StateLabel = "工作中";
+                IslandLabel = "干活ing";
             }
             else if (FailureCount > 0 || PendingResultWakeups > 0 || IsConnectionError(ConnectionState))
             {
                 VisualState = TrayVisualState.Warning;
                 StateLabel = ConnectionText(ConnectionState);
+                IslandLabel = IsConnectionError(ConnectionState) ? ConnectionText(ConnectionState, true) :
+                    PendingResultWakeups > 0 ? "回执卡壳" : "联络卡壳";
             }
             else if (IsWorking)
             {
                 VisualState = TrayVisualState.Busy;
                 StateLabel = "工作中";
+                IslandLabel = "干活ing";
             }
             else if (Online || ConnectionState == "ready")
             {
                 VisualState = TrayVisualState.Running;
                 StateLabel = QueuedTasks > 0 || Pending ? "待处理" :
                     SessionActivity == "unknown" ? "活动未知" : "在线";
+                IslandLabel = QueuedTasks > 0 || Pending ? "有单待接" :
+                    SessionActivity == "unknown" ? "动静不明" : "摸鱼ing";
             }
             else
             {
                 VisualState = TrayVisualState.Offline;
                 StateLabel = IsOptionalUnbound ? "按需领取" : ConnectionText(ConnectionState);
+                IslandLabel = IsOptionalUnbound ? "蹲个单" : ConnectionText(ConnectionState, true);
             }
         }
 
-        internal static string ConnectionText(string state)
+        internal static string ConnectionText(string state, bool island = false)
         {
             switch (state)
             {
-                case "ready": return "在线";
-                case "busy": return "执行中";
-                case "reconnecting": return "待重连";
-                case "pipe_missing": return "管道失联";
-                case "runtime_missing": return "运行时失效";
-                case "app_tools_server_missing": return "App Tools 失效";
-                case "connection_context_missing": return "等待连接";
-                case "service_unavailable": return "服务不可用";
-                case "session_missing": return "会话失效";
-                case "auth_required": return "等待登录";
-                case "cli_missing": return "CLI 缺失";
-                case "degraded": return "连接异常";
-                case "unbound": return "未绑定";
-                case "offline": return "离线";
-                default: return String.IsNullOrWhiteSpace(state) ? "离线" : state;
+                case "ready": return island ? "摸鱼ing" : "在线";
+                case "busy": return island ? "干活ing" : "执行中";
+                case "reconnecting": return island ? "找信号中" : "待重连";
+                case "pipe_missing": return island ? "电话掉线" : "管道失联";
+                case "runtime_missing": return island ? "工位断电" : "运行时失效";
+                case "app_tools_server_missing": return island ? "工具罢工" : "App Tools 失效";
+                case "connection_context_missing": return island ? "等电梯" : "等待连接";
+                case "service_unavailable": return island ? "带病罢工" : "服务不可用";
+                case "session_missing": return island ? "工位走丢" : "会话失效";
+                case "auth_required": return island ? "等刷工牌" : "等待登录";
+                case "cli_missing": return island ? "没带工具" : "CLI 缺失";
+                case "degraded": return island ? "信号打嗝" : "连接异常";
+                case "unbound": return island ? "等领工位" : "未绑定";
+                case "offline": case null: case "": return island ? "睡着了" : "离线";
+                default: return island ? "动静不明" : String.IsNullOrWhiteSpace(state) ? "离线" : state;
             }
         }
 
@@ -504,7 +535,7 @@ namespace AgentsChatLauncher
                 && state != "offline" && state != "unbound";
         }
 
-        private static DateTime? TimeValue(Dictionary<string, object> data, string key)
+        internal static DateTime? TimeValue(Dictionary<string, object> data, string key)
         {
             if (data == null || !data.ContainsKey(key) || data[key] == null) return null;
             try
@@ -945,10 +976,10 @@ namespace AgentsChatLauncher
                 TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
         }
 
-        private List<RoleSnapshot> VisibleRoles()
+        private List<RoleSnapshot> TopologyRoles()
         {
             return ProjectRoles().OrderBy(role => role.IsWorking ? 0 : role.VisualState == TrayVisualState.Warning ? 1 : role.VisualState == TrayVisualState.Running ? 2 : 3)
-                .ThenBy(role => role.Role).Take(6).ToList();
+                .ThenBy(role => role.Role).ToList();
         }
 
         private void DrawTopology(Graphics graphics, Rectangle bounds)
@@ -959,10 +990,22 @@ namespace AgentsChatLauncher
                 new Rectangle(bounds.X + 40, bounds.Y, 132, 44), TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
             string projectName = selectedProject.Length == 0 ? "全部会话" :
                 snapshot.Projects.Where(project => project.Id == selectedProject).Select(project => project.Name).FirstOrDefault() ?? selectedProject;
-            RelayTheme.TextLine(graphics, projectName, RelayTheme.Mono8, RelayTheme.Text3,
-                new Rectangle(bounds.X + 170, bounds.Y, bounds.Width - 186, 44), TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
-            using (Pen pen = new Pen(RelayTheme.Line)) graphics.DrawLine(pen, bounds.X, bounds.Y + 44, bounds.Right, bounds.Y + 44);
             Rectangle stage = new Rectangle(bounds.X + 12, bounds.Y + 52, bounds.Width - 24, bounds.Height - 64);
+            const int nodeHeight = 54;
+            const int verticalMargin = 12;
+            const int rowGap = 10;
+            int rowsPerPage = Math.Max(1, (stage.Height - verticalMargin * 2 + rowGap) / (nodeHeight + rowGap));
+            int pageSize = rowsPerPage * 2;
+            List<RoleSnapshot> allRoles = TopologyRoles();
+            int selectedIndex = allRoles.FindIndex(role => role.Address == selectedAddress);
+            int first = Math.Max(0, selectedIndex) / pageSize * pageSize;
+            List<RoleSnapshot> roles = allRoles.Skip(first).Take(pageSize).ToList();
+            bool hasPages = allRoles.Count > pageSize;
+            RelayTheme.TextLine(graphics, projectName, RelayTheme.Mono8, RelayTheme.Text3,
+                new Rectangle(bounds.X + 170, bounds.Y, bounds.Width - 186 - (hasPages ? 130 : 0), 44),
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
+            if (hasPages) DrawTopologyPager(graphics, bounds, allRoles, first, pageSize);
+            using (Pen pen = new Pen(RelayTheme.Line)) graphics.DrawLine(pen, bounds.X, bounds.Y + 44, bounds.Right, bounds.Y + 44);
             using (Pen grid = new Pen(Color.FromArgb(30, 36, 41)))
             {
                 for (int x = stage.Left + stage.Width / 4; x < stage.Right; x += Math.Max(1, stage.Width / 4))
@@ -970,7 +1013,6 @@ namespace AgentsChatLauncher
                 for (int y = stage.Top + stage.Height / 3; y < stage.Bottom; y += Math.Max(1, stage.Height / 3))
                     graphics.DrawLine(grid, stage.Left, y, stage.Right, y);
             }
-            List<RoleSnapshot> roles = VisibleRoles();
             if (roles.Count == 0)
             {
                 RelayTheme.TextLine(graphics, snapshot.Running ? "这个项目还没有角色" : "启动后台后显示会话拓扑",
@@ -978,8 +1020,8 @@ namespace AgentsChatLauncher
                 return;
             }
             int nodeWidth = Math.Min(142, Math.Max(116, stage.Width / 3));
-            int nodeHeight = 54;
-            Rectangle[] anchors = NodeAnchors(stage, nodeWidth, nodeHeight);
+            int rowCount = Math.Min(rowsPerPage, Math.Max(3, (roles.Count + 1) / 2));
+            Rectangle[] anchors = NodeAnchors(stage, nodeWidth, nodeHeight, rowCount, verticalMargin);
             PointF hub = new PointF(stage.Left + stage.Width / 2F, stage.Top + stage.Height / 2F);
             for (int index = 0; index < roles.Count; index++)
             {
@@ -1011,6 +1053,27 @@ namespace AgentsChatLauncher
             RelayTheme.TextLine(graphics, "BROKER", RelayTheme.Mono8, RelayTheme.Text3,
                 new Rectangle((int)hub.X - 50, (int)hub.Y + 42, 100, 16), TextFormatFlags.HorizontalCenter);
             for (int index = 0; index < roles.Count; index++) DrawNode(graphics, anchors[index], roles[index]);
+        }
+
+        private void DrawTopologyPager(Graphics graphics, Rectangle bounds, List<RoleSnapshot> roles, int first, int pageSize)
+        {
+            int end = Math.Min(roles.Count, first + pageSize);
+            Rectangle previous = new Rectangle(bounds.Right - 142, bounds.Y + 9, 25, 26);
+            Rectangle next = new Rectangle(bounds.Right - 39, bounds.Y + 9, 25, 26);
+            DrawTopologyPageButton(graphics, previous, "‹", first > 0 ? roles[first - pageSize] : null);
+            RelayTheme.TextLine(graphics, (first + 1) + "–" + end + " / " + roles.Count,
+                RelayTheme.Mono8, RelayTheme.Text2, Rectangle.FromLTRB(previous.Right, previous.Top, next.Left, previous.Bottom),
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            DrawTopologyPageButton(graphics, next, "›", end < roles.Count ? roles[end] : null);
+        }
+
+        private void DrawTopologyPageButton(Graphics graphics, Rectangle bounds, string label, RoleSnapshot destination)
+        {
+            RelayTheme.Card(graphics, bounds, 6, RelayTheme.Surface2, RelayTheme.Line);
+            RelayTheme.TextLine(graphics, label, RelayTheme.Font10, destination == null ? RelayTheme.Text3 : RelayTheme.Text,
+                bounds, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+            if (destination != null)
+                hits.Add(new HitRegion(bounds, "topology-page") { ProjectId = destination.ProjectId, Address = destination.Address });
         }
 
         private static PointF[] RouteCurve(PointF role, PointF hub)
@@ -1107,18 +1170,19 @@ namespace AgentsChatLauncher
             return new PointF(x, y);
         }
 
-        private static Rectangle[] NodeAnchors(Rectangle stage, int width, int height)
+        private static Rectangle[] NodeAnchors(Rectangle stage, int width, int height, int rows, int margin)
         {
             int left = stage.Left + 8;
             int right = stage.Right - width - 8;
-            int top = stage.Top + 12;
-            int middle = stage.Top + (stage.Height - height) / 2;
-            int bottom = stage.Bottom - height - 12;
-            return new Rectangle[] {
-                new Rectangle(left, top, width, height), new Rectangle(right, top, width, height),
-                new Rectangle(left, middle, width, height), new Rectangle(right, middle, width, height),
-                new Rectangle(left, bottom, width, height), new Rectangle(right, bottom, width, height)
-            };
+            int travel = stage.Height - height - margin * 2;
+            Rectangle[] anchors = new Rectangle[rows * 2];
+            for (int row = 0; row < rows; row++)
+            {
+                int top = stage.Top + margin + (rows == 1 ? travel / 2 : row * travel / (rows - 1));
+                anchors[row * 2] = new Rectangle(left, top, width, height);
+                anchors[row * 2 + 1] = new Rectangle(right, top, width, height);
+            }
+            return anchors;
         }
 
         private void DrawNode(Graphics graphics, Rectangle bounds, RoleSnapshot role)
@@ -1407,7 +1471,7 @@ namespace AgentsChatLauncher
                     snapshot.Roles.Select(role => role.Address).FirstOrDefault() ?? "";
                 Invalidate();
             }
-            else if (hit.Kind == "role")
+            else if (hit.Kind == "role" || hit.Kind == "topology-page")
             {
                 selectedProject = hit.ProjectId;
                 selectedAddress = hit.Address;
@@ -1685,7 +1749,7 @@ namespace AgentsChatLauncher
             Rectangle open = new Rectangle(12, y + 12, Width - 112, 38);
             RelayTheme.Card(graphics, open, 9, RelayTheme.Accent, RelayTheme.Accent);
             RelayTheme.Glyph(graphics, "network", new Rectangle(open.X + 70, open.Y + 10, 18, 18), RelayTheme.AccentInk);
-            RelayTheme.TextLine(graphics, "打开状态窗口", RelayTheme.Font8Medium, RelayTheme.AccentInk,
+            RelayTheme.TextLine(graphics, "显示桌面悬浮岛", RelayTheme.Font8Medium, RelayTheme.AccentInk,
                 new Rectangle(open.X + 94, open.Y, open.Width - 106, open.Height), TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
             hits.Add(new HitRegion(open, "open"));
             Rectangle reload = new Rectangle(open.Right + 8, open.Y, 38, 38);

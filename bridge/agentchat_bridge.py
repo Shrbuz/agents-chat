@@ -88,6 +88,7 @@ class AgentChatBridge:
                                       "local_role": local_role}
             prepared.append({"id": pid, "root": project["root"], "bus": bus,
                              "helper": _helper_for(project, project["root"]),
+                             "addresses": {role: item["address"] for role, item in resolved.items()},
                              "roles": _wake_roles(chat, resolved),
                              "project_id": manifest.get("project_id", pid)})
         return prepared
@@ -367,6 +368,16 @@ class AgentChatBridge:
             self._reconcile_pending(project)
             self._record_success(project_id)
         self._sync_projection(project, tasks)
+        addresses = project["addresses"]
+        # Publish one immutable batch. A rail refresh can span several bus transitions.
+        project["traffic"] = [
+            {"id": "bus:{}:{}".format(project_id, e["message_id"]),
+             "sender": addresses[e["from"]], "recipient": addresses[e["to"]],
+             "at": parse_time(e["created_at"]).timestamp(), "kind": e["type"]}
+            for e in events[-120:] if e.get("type") in {
+                "request", "claim", "result", "verify", "progress", "blocked", "release", "reassign", "cancel"}
+            and e["from"] in addresses and e["to"] in addresses and e["from"] != e["to"]
+        ]
 
     def _enqueue_wakeup(self, project, bus_role, role, event, action):
         return self._enqueue_wakeup_batch(project, bus_role, role, [(event, action)])

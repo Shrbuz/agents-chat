@@ -131,6 +131,25 @@ class BridgeProjectionTests(unittest.TestCase):
         # The wake cursor is store state now; no side-car JSON file is written.
         self.assertFalse((self.state / "agent-chat-cursors.json").exists())
 
+    def test_traffic_preserves_both_directions_between_polls(self):
+        bus = Bus(self.bus_root)
+        project = self.bridge.projects[0]
+        task = bus.submit("request", "frontend", "fe", recipient="backend", data={
+            "title": "change", "body": "private task text", "acceptance": ["works"]})["task"]
+        token = bus.submit("claim", "backend", "be", task_id=task["task_id"])["event"]["data"]["token"]
+        bus.submit("renew", "backend", "be", task_id=task["task_id"], token=token)
+        bus.submit("result", "backend", "be", task_id=task["task_id"], token=token,
+                   data={"body": "done", "evidence": ["test"]})
+        self.bridge._scan(project)
+        traffic = project["traffic"]
+        self.assertEqual([(e["sender"], e["recipient"], e["kind"]) for e in traffic], [
+            ("alpha.frontend", "alpha.backend", "request"),
+            ("alpha.backend", "alpha.frontend", "claim"),
+            ("alpha.backend", "alpha.frontend", "result")])
+        self.assertTrue(all(set(e) == {"id", "at", "sender", "recipient", "kind"} for e in traffic))
+        self.bridge._scan(project)
+        self.assertEqual(traffic, project["traffic"])
+
     def test_lease_is_renewed_for_a_live_desktop_session(self):
         from datetime import timedelta
         from bridge.bus import Bus, parse_time, stamp, utc_now

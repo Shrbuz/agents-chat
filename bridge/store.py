@@ -694,8 +694,10 @@ class Store:
                     kind = None
                 active.append({"target": row["target"], "state": row["state"], "kind": kind})
             events = [dict(row) for row in db.execute(
-                "SELECT e.seq,e.task_id,e.state,e.at,t.sender,t.target,t.started "
+                "SELECT e.seq,e.task_id,e.state,e.at,t.sender,t.target,t.started,t.created, "
+                "json_extract(t.payload,'$.kind') AS kind, m.seq AS reply_seq "
                 "FROM events e JOIN tasks t ON t.id=e.task_id "
+                "LEFT JOIN messages m ON m.task_id=t.id "
                 "ORDER BY e.seq DESC LIMIT ?", (limit,))]
             bus_tasks = [dict(row) for row in db.execute(
                 "SELECT project,task_id,requester,assignee,status,sequence,updated_at,last_type "

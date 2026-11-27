@@ -4,7 +4,7 @@
 
 [![Release](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml/badge.svg)](https://github.com/Shrbuz/agents-chat/actions/workflows/release.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-![Version](https://img.shields.io/badge/version-0.8.5-blue)
+![Version](https://img.shields.io/badge/version-0.8.6-blue)
 
 Let several agent chats on one machine hand work to each other, return results automatically, and verify them. A role in a project (`leader`, `frontend`, `tester`, …) is a collaboration seat; tasks are routed by role, so nobody has to copy text between two chat windows.
 
@@ -309,10 +309,13 @@ The stdio MCP exposes task send/wait/query, inbox, registration and pull-executi
 
 ## Tray and portable build
 
-- `AgentsChat.exe`: tray host; starts the local hub and opens a status window with a real table (columns, real chat names, start/stop buttons).
+- Launch `AgentsChat.exe` to see a vertical island of colored project badges at the desktop edge. Hover over a badge to reveal its animals. Working roles write in a notebook, and a moving ring marks projects with active roles.
+- Right-click a project badge or role animal to choose a new icon from the preview menu. Projects can share badges, and roles can share animals. Choices are saved on this computer. Use the same menu to restore automatic selection.
+- A paper ball follows each new collaboration message. The footer shows the most recent sender, recipient, action and time. Click an animal for its session details.
+- Drag the top grip or a project badge to move the island with the pointer. Release in either half of a monitor to glide to that edge and remember the drop height. Scroll for more projects and use the arrows for more roles. Hide the island from its context menu and double-click the system tray icon to bring it back.
 - `AgentsChat.Cli.exe`: the entry point for agents and scripts; the same directory also serves stdio MCP.
 - `python build_portable.py` produces `dist/AgentsChat-Portable/` and a zip with an embedded Python runtime — unpack and run.
-- The tray does three things only: start/stop the hub, show status, open the config and data directories. Measured idle on this machine: tray 41 MB, hub 29 MB, no model calls while idle.
+- The tray menu also provides hub controls and access to the configuration and data folders. Animations use hub status updates without model calls.
 
 ---
 

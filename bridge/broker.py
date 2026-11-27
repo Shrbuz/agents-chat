@@ -19,7 +19,8 @@ from .store import Store, TERMINAL, compact
 from .desktop_transport import DesktopHub
 from .codex_activity import CodexActivity
 from .agentchat_bridge import AgentChatBridge
-from .antigravity import Probes as AntigravityProbes, TRANSPORT as ANTIGRAVITY_TRANSPORT
+from .antigravity import (Probes as AntigravityProbes, TRANSPORT as ANTIGRAVITY_TRANSPORT,
+                          read_activity as read_antigravity_activity)
 from .codex_connection import active_connection_id, select_connection, update_connection
 from .collaboration import collaboration_mode, project_mode
 from .config import (ConfigError, adapter_for_transport, allowed_target, find_role, label,
@@ -608,6 +609,16 @@ class Broker:
             result = [item for item in result if item["online"]]
         return result
 
+    def antigravity_activity(self):
+        if not self.antigravity.ready:
+            return {}
+        with self.desktop.cv:
+            sessions = {binding["session_id"] for agent, binding in self.desktop.bindings.items()
+                        if binding.get("transport") == ANTIGRAVITY_TRANSPORT and binding.get("session_id")
+                        and agent in self.endpoints and self.endpoints[agent].get("enabled", True)
+                        and self.desktop.connection_status(agent)["online"] and not self.binding_mismatch(agent)}
+        return read_antigravity_activity(sessions)
+
     def role_activity(self):
         """Build per-role work and directional traffic for the live topology."""
         activity = {name: {
@@ -616,6 +627,8 @@ class Broker:
             "last_receive_event_id": None, "last_receive_at": None, "last_receive_kind": None,
         } for name in self.endpoints}
         snapshot = self.store.activity_snapshot()
+        traffic = {item["id"]: item for project in self.agent_chat.projects
+                   for item in project.get("traffic", ())}
 
         def record(internal, direction, event_id, at, kind):
             if internal not in activity or at is None:
@@ -657,6 +670,17 @@ class Broker:
             state = event.get("state")
             event_id = "queue:{}:{}:{}".format(event.get("seq"), event.get("task_id"), state)
             at = event.get("at")
+            sender, target = event["sender"], event["target"]
+            if sender != target and sender in activity and target in activity:
+                key = "queue:" + event["task_id"]
+                if state == "queued":
+                    kind = "notify" if event["kind"] == "agent_chat_wakeup" else "request"
+                    traffic[key] = {"id": key, "at": event["created"], "sender": sender,
+                                    "recipient": target, "kind": kind}
+                elif state in TERMINAL and event["reply_seq"] is not None:
+                    key += ":reply"
+                    traffic[key] = {"id": key, "at": at, "sender": target,
+                                    "recipient": sender, "kind": "result"}
             if state == "queued":
                 record(event.get("sender"), "send", event_id, at, "task")
             elif state == "running":
@@ -686,7 +710,7 @@ class Broker:
                 task.get("project"), task.get("task_id"), task.get("sequence"), kind)
             record(sender, "send", base + ":send", at, kind)
             record(recipient, "receive", base + ":receive", at, kind)
-        return activity
+        return activity, sorted(traffic.values(), key=lambda item: item["at"])[-120:]
 
     def call(self, method, p):
         if not isinstance(p, dict):
@@ -727,8 +751,9 @@ class Broker:
         if method == "status":
             return {"health": self.call("health", {}), "roles": self.call("roles", {})}
         if method in ("roles", "projects", "role_list"):
-            role_activity = self.role_activity()
+            role_activity, traffic = self.role_activity()
             codex_activity = self.codex_activity.snapshot(active_connection_id(self.state_dir))
+            antigravity_activity = self.antigravity_activity()
             projects = projects_summary(self.config)
             for project in projects:
                 for role in project["roles"]:
@@ -741,6 +766,8 @@ class Broker:
                     role["session_id"] = self.desktop.bindings.get(internal, {}).get("session_id")
                     if role["desktop_transport"] == "codex_app_tools":
                         role["session_activity"] = codex_activity.get(role["session_id"], "unknown")
+                    elif role["desktop_transport"] == ANTIGRAVITY_TRANSPORT:
+                        role["session_activity"] = antigravity_activity.get(role["session_id"], "unknown")
                     binding = self.desktop.bindings.get(internal, {})
                     role["session_title"] = titles.desktop_title(binding.get("transport"), binding.get("session_id"))
                     role["pending"] = self.store.has_pending(internal)
@@ -759,7 +786,7 @@ class Broker:
                     # mismatch used to be invisible until tasks failed.
                     role["expected_adapter"] = adapter_for_transport(binding.get("transport"))
                     role["adapter_transport_mismatch"] = self.binding_mismatch(internal)
-            return {"projects": projects, "totals": self.store.stats()}
+            return {"projects": projects, "totals": self.store.stats(), "traffic": traffic}
         if method == "targets":
             result = []
             for name, endpoint in self.endpoints.items():
@@ -783,6 +810,8 @@ class Broker:
         if method == "connectors_start":
             self._ensure_desktop_connectors()
             return {"started": True}
+        if method == "antigravity_activity":
+            return self.antigravity_activity()
         if method == "antigravity_status":
             return {"ready": self.antigravity.ready,
                     "transport": self.passive_transport_health(ANTIGRAVITY_TRANSPORT)}

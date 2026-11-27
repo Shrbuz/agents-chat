@@ -15,8 +15,8 @@ using System.Web.Script.Serialization;
 [assembly: AssemblyDescription("Multi-project, multi-role local agent collaboration hub")]
 [assembly: AssemblyCompany("Agents Chat")]
 [assembly: AssemblyProduct("Agents Chat")]
-[assembly: AssemblyVersion("0.7.1.0")]
-[assembly: AssemblyFileVersion("0.7.1.0")]
+[assembly: AssemblyVersion("0.8.6.0")]
+[assembly: AssemblyFileVersion("0.8.6.0")]
 
 namespace AgentsChatLauncher
 {
@@ -297,6 +297,7 @@ namespace AgentsChatLauncher
         private readonly NotifyIcon icon;
         private readonly System.Windows.Forms.Timer timer;
         private readonly object statusLock = new object();
+        private int refreshPending;
         private Icon trayIcon;
         private TrayVisualState trayVisualState = TrayVisualState.Offline;
         private readonly Form dispatcher = new Form();
@@ -304,6 +305,7 @@ namespace AgentsChatLauncher
         private readonly EventWaitHandle showTrayEvent;
         private readonly EventWaitHandle quitEvent;
         private StatusForm panel;
+        private ProjectIsland island;
         private TrayPopoverForm trayPanel;
         private bool busy;
         private string lastMessage = "";
@@ -385,13 +387,23 @@ namespace AgentsChatLauncher
             };
 
             timer = new System.Windows.Forms.Timer();
-            timer.Interval = 3000;
-            timer.Tick += delegate { RefreshAsync(); };
+            timer.Interval = 1000;
+            int ticksToFullStatus = 3;
+            timer.Tick += delegate
+            {
+                if (--ticksToFullStatus <= 0)
+                {
+                    if (RefreshAsync()) ticksToFullStatus = 3;
+                }
+                else if (island != null && island.ShowsAntigravity)
+                    RefreshAsync(true);
+            };
             timer.Start();
         }
 
         public void Start()
         {
+            OpenPanel();
             RefreshAsync();
             EnsureHubAsync();
         }
@@ -443,9 +455,31 @@ namespace AgentsChatLauncher
             catch { }
         }
 
-        private void RefreshAsync()
+        private bool RefreshAsync(bool activityOnly = false)
         {
-            ThreadPool.QueueUserWorkItem(delegate { Refresh(); });
+            if (Interlocked.Exchange(ref refreshPending, 1) != 0) return false;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                try
+                {
+                    if (!activityOnly) Refresh();
+                    else
+                    {
+                        lock (statusLock)
+                        {
+                            Dictionary<string, object> observations = TryStatus("antigravity_activity");
+                            dispatcher.BeginInvoke(new Action(delegate
+                            {
+                                if (island != null && !island.IsDisposed && island.Visible)
+                                    island.SetAntigravityActivity(observations);
+                            }));
+                        }
+                    }
+                }
+                catch (InvalidOperationException) { } // dispatcher already closed
+                finally { Interlocked.Exchange(ref refreshPending, 0); }
+            });
+            return true;
         }
 
         private void Refresh()
@@ -497,6 +531,8 @@ namespace AgentsChatLauncher
             }
             if (panel != null)
                 panel.SetStatus(status, configPath, stateDir);
+            if (island != null)
+                island.SetSnapshot(StatusSnapshot.From(status));
             if (trayPanel != null)
                 trayPanel.SetStatus(status, configPath, stateDir);
         }
@@ -513,7 +549,7 @@ namespace AgentsChatLauncher
             return TrayVisualState.Running;
         }
 
-        private Dictionary<string, object> TryStatus()
+        private Dictionary<string, object> TryStatus(string method = "status")
         {
             try
             {
@@ -522,7 +558,7 @@ namespace AgentsChatLauncher
                 JavaScriptSerializer serializer = new JavaScriptSerializer();
                 Dictionary<string, object> endpoint = serializer.DeserializeObject(File.ReadAllText(endpointPath, Encoding.UTF8)) as Dictionary<string, object>;
                 if (endpoint == null) return null;
-                object response = Call(endpoint, "status", new Dictionary<string, object>());
+                object response = Call(endpoint, method, new Dictionary<string, object>());
                 return response as Dictionary<string, object>;
             }
             catch
@@ -668,6 +704,17 @@ namespace AgentsChatLauncher
         internal void OpenPanel()
         {
             if (trayPanel != null) trayPanel.Hide();
+            if (island == null || island.IsDisposed)
+            {
+                island = new ProjectIsland(OpenPanelForRole, OpenDetails, Path.Combine(stateDir, "island-position.local.txt"));
+                island.SetSnapshot(StatusSnapshot.From(lastStatus));
+            }
+            if (!island.Visible) island.Show();
+        }
+
+        private void OpenDetails()
+        {
+            if (trayPanel != null) trayPanel.Hide();
             if (panel == null || panel.IsDisposed)
                 panel = new StatusForm(
                     delegate { ToggleHub(); },
@@ -688,7 +735,7 @@ namespace AgentsChatLauncher
 
         private void OpenPanelForRole(string projectId, string address)
         {
-            OpenPanel();
+            OpenDetails();
             if (panel != null) panel.SelectRole(projectId, address);
         }
 
@@ -777,6 +824,7 @@ namespace AgentsChatLauncher
                 if (icon != null) icon.Dispose();
                 if (trayIcon != null) trayIcon.Dispose();
                 if (panel != null) panel.Dispose();
+                if (island != null) island.Dispose();
                 if (trayPanel != null) trayPanel.Dispose();
                 if (showEvent != null) showEvent.Dispose();
                 if (showTrayEvent != null) showTrayEvent.Dispose();

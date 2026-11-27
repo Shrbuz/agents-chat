@@ -27,6 +27,11 @@ def build(output=None, console=False):
     sources = [
         ROOT / "launcher/AgentsChatLauncher.cs",
         ROOT / "launcher/AgentsChatVisuals.cs",
+        ROOT / "launcher/ProjectIsland.cs",
+        ROOT / "launcher/IslandSurface.cs",
+        ROOT / "launcher/IslandContextMenu.cs",
+        ROOT / "launcher/IslandIconPreferences.cs",
+        ROOT / "launcher/IslandArt.cs",
     ]
     command = [
         str(compiler()), "/nologo", "/target:" + ("exe" if console else "winexe"), "/optimize+", "/platform:anycpu",
